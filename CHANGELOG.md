@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [v2.2.0] - 2026-09-20
+
 - **自适应布局**：新增三档宽度断点（≤1100 / ≤820 / ≤560px），窗口缩放时侧边栏、表单栅格、结果卡片与看板自动重排；侧边栏在窄屏收为图标条，鼠标悬停显示名称。
 - **自适应布局**：看板弹窗增加 `max-width: 92vw`，窄窗口下不再溢出屏幕。
 - **动效增强**：统计数字改为平滑滚动递增（公网与内网共 9 个指标），避免结果瞬间跳变。
@@ -62,7 +64,8 @@
 - 提供 Windows 便携式桌面发行包。
 - 公网 Web 与内网发现共用扫描核心，输出 HTML、Markdown、CSV、JSON 报告。
 
-[Unreleased]: https://github.com/Chengxiaoyu1119/yucedu-vlunhub-scan/compare/v2.1.2...HEAD
+[Unreleased]: https://github.com/Chengxiaoyu1119/yucedu-vlunhub-scan/compare/v2.2.0...HEAD
+[v2.2.0]: https://github.com/Chengxiaoyu1119/yucedu-vlunhub-scan/releases/tag/v2.2.0
 [v2.1.2]: https://github.com/Chengxiaoyu1119/yucedu-vlunhub-scan/releases/tag/v2.1.2
 [v2.1.1]: https://github.com/Chengxiaoyu1119/yucedu-vlunhub-scan/releases/tag/v2.1.1
 [v2.1.0]: https://github.com/Chengxiaoyu1119/yucedu-vlunhub-scan/releases/tag/v2.1.0
