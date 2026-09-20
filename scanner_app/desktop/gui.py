@@ -621,7 +621,6 @@ def main():
             height=780,
             min_size=(1000, 660),
             background_color="#f5f5f7",
-            icon=str(GUI_DIR / "app_icon_dock.png"),
         )
         webview.start(set_dock_icon)
     except Exception as exc:
