@@ -19,6 +19,7 @@ Desktop.ini
 
 # 本地工具/代理生成的元数据
 .zcode/
+.workbuddy/
 
 # 日志与临时文件
 *.log

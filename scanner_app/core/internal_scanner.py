@@ -177,7 +177,7 @@ def run_internal_scan(cidrs=None, ports=None, timeout=DEFAULT_TIMEOUT, threads=D
                 ip = futmap[fut]
                 try:
                     ping_results[ip] = fut.result()
-                except Exception:
+                except (OSError, ValueError, TypeError, subprocess.SubprocessError):
                     ping_results[ip] = {"alive": False, "ttl": None, "latency_ms": None}
                 if i % 32 == 0 or i == total:
                     base_on_event({"type": "progress", "phase": "ping", "done": i, "total": total})
@@ -209,7 +209,7 @@ def run_internal_scan(cidrs=None, ports=None, timeout=DEFAULT_TIMEOUT, threads=D
                 try:
                     if fut.result():
                         open_map.setdefault(ip, []).append(p)
-                except Exception:
+                except (OSError, ValueError, TypeError):
                     pass
                 done_cnt += 1
                 if done_cnt % 64 == 0 or done_cnt == detail_total:
@@ -264,7 +264,8 @@ def run_internal_scan(cidrs=None, ports=None, timeout=DEFAULT_TIMEOUT, threads=D
                     break
                 try:
                     host = fut.result()
-                except Exception as e:
+                except (OSError, ValueError, TypeError, RuntimeError,
+                        subprocess.SubprocessError) as e:
                     base_on_event({"type": "error", "message": f"探测 {futmap[fut]} 出错：{e!r}"})
                     continue
                 if host:

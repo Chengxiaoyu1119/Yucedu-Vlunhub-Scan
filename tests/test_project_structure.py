@@ -24,7 +24,6 @@ ALLOWED_ROOT_ENTRIES = {
     "LICENSE",
     "README.md",
     "SECURITY.md",
-    "docs",
     "launchers",
     "requirements-build.txt",
     "requirements.txt",
@@ -44,6 +43,7 @@ LEGACY_ROOT_FILES = {
     "screenshot.py",
     "test_charts.py",
     "test_platform_support.py",
+    "test_domain_discovery.py",
     "test_report_charts.py",
     "build_windows.ps1",
     "build_windows.spec",
@@ -51,8 +51,18 @@ LEGACY_ROOT_FILES = {
 
 
 def visible_names(path: Path) -> set[str]:
-    """返回目录中应纳入结构检查的名称，忽略缓存目录和系统文件。"""
-    ignored = {"__pycache__", ".DS_Store", "Thumbs.db", "Desktop.ini"}
+    """返回目录中应纳入结构检查的名称，忽略缓存目录、系统文件和工具/IDE 元数据。"""
+    ignored = {
+        "__pycache__",
+        ".pytest_cache",
+        ".DS_Store",
+        "Thumbs.db",
+        "Desktop.ini",
+        # 工具/IDE 工作目录属环境元数据，不应计入项目边界检查
+        ".workbuddy",
+        ".idea",
+        ".vscode",
+    }
     return {item.name for item in path.iterdir() if item.name not in ignored}
 
 
@@ -88,7 +98,7 @@ class ProjectStructureTests(unittest.TestCase):
         )
         self.assertEqual(
             visible_names(ROOT / "scanner_app" / "desktop" / "web"),
-            {"app.js", "app_icon.png", "app_icon.svg", "chart.umd.min.js", "index.html", "style.css"},
+            {"app.js", "app_icon.png", "app_icon_dock.png", "app_icon.svg", "chart.umd.min.js", "index.html", "style.css"},
         )
         self.assertEqual(
             visible_names(ROOT / "launchers"),
@@ -101,6 +111,7 @@ class ProjectStructureTests(unittest.TestCase):
                 "build_windows.ps1",
                 "build_windows.spec",
                 "package_windows.ps1",
+                "preview_server.py",
                 "pyinstaller_hooks",
             },
         )
@@ -110,8 +121,8 @@ class ProjectStructureTests(unittest.TestCase):
         )
 
     def test_documentation_preview_asset_stays_outside_runtime_resources(self):
-        self.assertEqual(visible_names(ROOT / "docs"), {"assets"})
-        self.assertEqual(visible_names(ROOT / "docs" / "assets"), {"app-preview.png"})
+        self.assertFalse((ROOT / "docs").exists())
+        self.assertEqual(visible_names(ROOT / ".github" / "assets"), {"app-preview.png"})
 
     def test_open_source_project_documents_are_present(self):
         for name in (
@@ -125,7 +136,7 @@ class ProjectStructureTests(unittest.TestCase):
             self.assertTrue((ROOT / name).is_file(), f"缺少开源项目文档：{name}")
 
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("docs/assets/app-preview.png", readme)
+        self.assertIn(".github/assets/app-preview.png", readme)
         self.assertIn("actions/workflows/ci.yml", readme)
         self.assertIn("mermaid", readme)
         self.assertIn("8000–8020", readme)
@@ -145,10 +156,12 @@ class ProjectStructureTests(unittest.TestCase):
                 "__init__.py",
                 "test_charts.py",
                 "test_platform_support.py",
+                "test_domain_discovery.py",
                 "test_project_structure.py",
                 "test_report_charts.py",
                 "test_scanner_core.py",
                 "test_screenshot.py",
+                "test_watch.py",
             },
         )
 
@@ -174,6 +187,8 @@ class ProjectStructureTests(unittest.TestCase):
         self.assertIn(", 0, False", windows_launcher)
         self.assertNotIn("cmd.exe", windows_launcher.lower())
         self.assertIn("scanner_app.desktop.gui", macos_launcher)
+        self.assertIn("command -v python3", macos_launcher)
+        self.assertNotIn("/Users/", macos_launcher)
         self.assertNotIn("range_gui.py", macos_launcher)
         self.assertIn('console=False', build_spec)
         self.assertIn('scanner_app/desktop/web', build_spec)

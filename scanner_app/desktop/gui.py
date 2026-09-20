@@ -14,6 +14,7 @@ import queue
 import re
 import sys
 import threading
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -22,8 +23,10 @@ try:
 except ImportError:  # 允许 CLI/静态测试在未安装 GUI 依赖时继续导入模块
     webview = None
 
-from scanner_app.core import internal_scanner, screenshot
+from scanner_app.core import domain_discovery, internal_scanner, screenshot
 from scanner_app.core.platform_support import (
+    APP_NAME,
+    APP_VERSION,
     GUI_DIR,
     RESULTS_ROOT,
     configure_console,
@@ -31,6 +34,7 @@ from scanner_app.core.platform_support import (
     notify as platform_notify,
     open_path as platform_open_path,
     play_sound as platform_play_sound,
+    resolve_output_dir,
     show_error,
 )
 from scanner_app.core import scanner_core
@@ -46,6 +50,14 @@ class Api:
         self.evt_queue = queue.Queue()
         self.scan_thread = None   # 公网/内网共用一个"当前扫描"槽位
         self.cancel = threading.Event()
+        # 已知子域轮询监控：独立线程与取消开关，不占用扫描槽位，可与扫描并存
+        self.watch_thread = None
+        self.watch_cancel = threading.Event()
+        # 每轮监控一个自增会话号，随所有 watch_* 事件下发。
+        # 旧监控的 watch_done 可能晚于新监控的 watch_start 才被前端拉走，
+        # 没有会话号时它会把新监控的轮询定时器关掉，界面就此卡住。
+        self.watch_seq = 0
+        self.watch_session = None
 
     # ---------- 配置 ----------
 
@@ -66,6 +78,28 @@ class Api:
             "ports": ", ".join(map(str, internal_scanner.DEFAULT_PORTS)),
             "threads": internal_scanner.DEFAULT_THREADS,
             "timeout": internal_scanner.DEFAULT_TIMEOUT,
+        }
+
+    def get_app_info(self):
+        """关于页信息：版本、运行环境、Python 版本、结果目录与截图能力。
+
+        结果目录只用于展示和"打开结果目录"按钮，实际打开仍走 open_path()
+        的目录白名单校验，避免这里成为越权入口。
+        """
+        if sys.platform == "win32":
+            platform_name = "windows"
+        elif sys.platform == "darwin":
+            platform_name = "macos"
+        else:
+            platform_name = "other"
+        return {
+            "name": APP_NAME,
+            "version": APP_VERSION,
+            "platform": platform_name,
+            "python": sys.version.split()[0],
+            "results_root": str(RESULTS_ROOT),
+            "screenshots_available": bool(screenshot.SCREENSHOT_AVAILABLE),
+            "screenshots_error": screenshot.SCREENSHOT_UNAVAILABLE_REASON,
         }
 
     # ---------- 扫描控制 ----------
@@ -131,7 +165,10 @@ class Api:
                     ports=port_list,
                 )
             except Exception as e:
-                self.evt_queue.put({"type": "error", "message": repr(e), "fatal": True})
+                # 工作线程边界：必须兜住所有异常，否则线程静默退出、界面会永久停在“扫描中”。
+                # 因此保留宽泛捕获，但回传完整 traceback，避免只看到 repr(e) 而无从排查。
+                self.evt_queue.put({"type": "error", "message": repr(e),
+                                    "traceback": traceback.format_exc(), "fatal": True})
 
         self.scan_thread = threading.Thread(target=worker, daemon=True)
         self.scan_thread.start()
@@ -177,7 +214,9 @@ class Api:
                     cancel=self.cancel,
                 )
             except Exception as e:
-                self.evt_queue.put({"type": "error", "message": repr(e), "fatal": True})
+                # 同 start_scan：工作线程边界保留宽泛捕获，但回传 traceback 便于排查。
+                self.evt_queue.put({"type": "error", "message": repr(e),
+                                    "traceback": traceback.format_exc(), "fatal": True})
 
         self.scan_thread = threading.Thread(target=worker, daemon=True)
         self.scan_thread.start()
@@ -186,6 +225,194 @@ class Api:
     def stop_scan(self):
         self.cancel.set()
         return {"ok": True}
+
+    # ---------- 已知子域轮询监控 ----------
+
+    # 合法主机名：点分标签，每个标签字母数字开头结尾、中间可含连字符
+    _HOSTNAME_RE = re.compile(
+        r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+
+    @staticmethod
+    def _normalize_watch_domain(raw: str) -> str:
+        """把输入规整为完整域名，无法规整时返回空串（调用方按假值过滤）。
+
+        支持三种写法：完整域名（lab-abc123.rzsec.cn）、带协议（https://…）、
+        以及只给随机位（abc123，自动套用靶场模板 lab-<id>.rzsec.cn）。
+
+        拼完还要过一遍主机名校验：否则 "@@" 会被拼成 lab-@@.rzsec.cn 这种
+        无效域名混进监控列表，白占轮询配额。
+        """
+        d = (raw or "").strip().lower()
+        if not d:
+            return ""
+        d = re.sub(r"^https?://", "", d).strip("/ ")
+        if "." not in d:                       # 只给了随机位，套用靶场模板
+            d = f"lab-{d}.rzsec.cn"
+        return d if Api._HOSTNAME_RE.match(d) else ""
+
+    def start_watch(self, opts):
+        """轮询监控已知子域，等待靶场拉起。
+
+        靶场按需随机生成域名、且拉起需要时间，盲扫 21.8 亿不现实；对已知 ID
+        轮询等待的命中率要高得多。
+
+        opts：domains（逗号/换行分隔）/ interval（秒）/ port / timeout / stop_on_all_up
+        事件：watch_start / watch_probe / watch_found / watch_round / watch_done
+        """
+        if self.watch_thread and self.watch_thread.is_alive():
+            return {"ok": False, "error": "监控已在运行中，请先停止"}
+        try:
+            opts = opts or {}
+            doms, seen = [], set()
+            for token in re.split(r"[\s,;]+", str(opts.get("domains") or "")):
+                d = self._normalize_watch_domain(token)
+                if d and d not in seen:
+                    seen.add(d)
+                    doms.append(d)
+            if not doms:
+                return {"ok": False, "error": "请至少填写一个子域或随机位"}
+            if len(doms) > 200:
+                return {"ok": False, "error": f"最多监控 200 个，当前 {len(doms)} 个"}
+
+            port = int(opts.get("port") or 443)
+            if not 1 <= port <= 65535:
+                return {"ok": False, "error": "监控端口需在 1-65535 之间"}
+            # 限制轮询频率：过快会被平台限流甚至判为滥用
+            interval = min(max(float(opts.get("interval") or 30), 5), 3600)
+            timeout = float(opts.get("timeout") or 2.0)
+            stop_on_all_up = bool(opts.get("stop_on_all_up"))
+
+            self.watch_cancel = threading.Event()
+            cancel = self.watch_cancel
+            self.watch_seq += 1
+            session = str(self.watch_seq)
+            self.watch_session = session
+
+            def worker():
+                state, rounds = {}, 0
+                try:
+                    self.evt_queue.put({"type": "watch_start", "session": session,
+                                        "domains": list(doms),
+                                        "port": port, "interval": interval,
+                                        "stop_on_all_up": stop_on_all_up})
+                    while not cancel.is_set():
+                        rounds += 1
+                        alive_cnt = 0
+                        for d in doms:
+                            if cancel.is_set():
+                                break
+                            info = domain_discovery.probe_domain(
+                                d, port, timeout=timeout,
+                                connect_timeout=min(timeout, 1.5),
+                                read_timeout=timeout,
+                                max_body=domain_discovery.DISCOVER_BODY)
+                            live = bool(info.get("live"))
+                            if live:
+                                alive_cnt += 1
+                            self.evt_queue.put({
+                                "type": "watch_probe", "session": session,
+                                "domain": d, "live": live,
+                                "status": info.get("status"), "title": info.get("title"),
+                                "round": rounds})
+                            # 仅在「未上线/未知 → 已上线」时上报一次，避免每轮刷屏
+                            if live and state.get(d) is not True:
+                                self.evt_queue.put({
+                                    "type": "watch_found", "session": session, "domain": d,
+                                    "status": info.get("status"),
+                                    "title": info.get("title"), "ip": info.get("ip"),
+                                    "port": port, "first": state.get(d) is None})
+                            state[d] = live
+                        self.evt_queue.put({"type": "watch_round", "session": session,
+                                            "round": rounds,
+                                            "alive": alive_cnt, "total": len(doms)})
+                        if stop_on_all_up and alive_cnt == len(doms):
+                            break
+                        if cancel.wait(interval):   # 可被 stop_watch 立即唤醒
+                            break
+                    self.evt_queue.put({"type": "watch_done", "session": session,
+                                        "rounds": rounds,
+                                        "alive": sum(1 for v in state.values() if v),
+                                        "total": len(doms)})
+                except Exception as e:
+                    # 工作线程边界：保留宽泛捕获，回传 traceback 便于排查
+                    self.evt_queue.put({"type": "error", "message": repr(e),
+                                        "traceback": traceback.format_exc(), "fatal": False})
+
+            self.watch_thread = threading.Thread(target=worker, daemon=True)
+            self.watch_thread.start()
+            return {"ok": True, "domains": doms, "interval": interval,
+                    "session": session}
+        except (OSError, ValueError, TypeError) as e:
+            return {"ok": False, "error": repr(e)}
+
+    def stop_watch(self):
+        """停止轮询监控（wait 会被立即唤醒，无需等到下个周期）。"""
+        self.watch_cancel.set()
+        return {"ok": True}
+
+    def is_watching(self):
+        return bool(self.watch_thread and self.watch_thread.is_alive())
+
+    def start_discovery(self, opts):
+        """子域发现（靶场变为 lab-XXXXXX.rzsec.cn 通配符域名后的搜索优化）。
+
+        opts（JS 字典）：template / charset / port_start / port_end / threads / timeout /
+        screenshots / discover_port / discover_threads / limit / found_limit /
+        mode / resume
+
+        charset 为空时回退到默认 a-z0-9（36^6≈21.8 亿，穷举不可行）。缩小字符集
+        是让发现变可行的唯一手段，例如十六进制仅 16^6≈1677 万。
+        复用与 start_scan 相同的事件队列与取消开关；发现的活域名会进入第二阶段
+        run_scan（沿用公网结果展示与报告）。
+        """
+        if self._busy():
+            return {"ok": False, "error": "扫描正在进行中，请先停止"}
+        try:
+            opts = opts or {}
+            template = str(opts.get("template") or "").strip() or None
+            outdir = resolve_output_dir("", "public")
+            outdir.mkdir(parents=True, exist_ok=True)
+            resume_path = str(outdir / ".discover_ckpt.json")
+            resume = bool(opts.get("resume"))
+            self.evt_queue = queue.Queue()
+            self.cancel = threading.Event()
+
+            def worker():
+                try:
+                    scanner_core.run_discovery_scan(
+                        template=template,
+                        prefix="lab-", suffix=".rzsec.cn", length=6,
+                        charset=(str(opts.get("charset") or "").strip() or None),
+                        mode=str(opts.get("mode") or "random"),
+                        discover_port=int(opts.get("discover_port") or 80),
+                        port_start=int(opts.get("port_start") or 80),
+                        port_end=int(opts.get("port_end") or 80),
+                        timeout=float(opts.get("timeout") or 1.0),
+                        connect_timeout=float(opts.get("discover_connect_timeout") or 0.6),
+                        read_timeout=float(opts.get("discover_read_timeout") or 1.0),
+                        threads=int(opts.get("threads") or 100),
+                        discover_threads=int(opts.get("discover_threads") or 300),
+                        limit=int(opts.get("limit") or 0) or None,
+                        found_limit=int(opts.get("found_limit") or 0) or None,
+                        resume_path=resume_path,
+                        reset=not resume,
+                        fast=bool(opts.get("fast")),
+                        output=str(outdir),
+                        on_event=lambda evt: self.evt_queue.put(evt),
+                        cancel=self.cancel,
+                        screenshots=bool(opts.get("screenshots", True)),
+                    )
+                except Exception as e:
+                    # 同 start_scan：工作线程边界保留宽泛捕获，但回传 traceback 便于排查。
+                    self.evt_queue.put({"type": "error", "message": repr(e),
+                                        "traceback": traceback.format_exc(), "fatal": True})
+
+            self.scan_thread = threading.Thread(target=worker, daemon=True)
+            self.scan_thread.start()
+            return {"ok": True}
+        except (OSError, ValueError, TypeError) as e:
+            # 参数解析（int/float）与结果目录创建（mkdir）的预期异常
+            return {"ok": False, "error": repr(e)}
 
     def poll_events(self, limit=60):
         """分批返回事件队列，避免一次回传大量事件导致前端批量渲染卡顿"""
@@ -362,12 +589,19 @@ def set_dock_icon():
     if sys.platform != "darwin":
         return
     try:
-        from AppKit import NSApplication, NSImage
-        img = NSImage.alloc().initWithContentsOfFile_(str(GUI_DIR / "app_icon.png"))
-        if img is not None:
-            NSApplication.sharedApplication().setApplicationIconImage_(img)
-    except Exception:
-        pass  # 图标设置失败不影响主功能
+        from AppKit import NSApplication, NSImage, NSSize
+        # 优先使用较小的 dock 专用图标（256x256）；缺失时回退到 1024 原图
+        for name in ("app_icon_dock.png", "app_icon.png"):
+            img = NSImage.alloc().initWithContentsOfFile_(str(GUI_DIR / name))
+            if img is not None:
+                # 约束逻辑尺寸为标准 Dock 图标大小，避免在高分屏/非 .app 进程下
+                # 被当成超大物理像素图标渲染（Dock 图标显得过大）
+                img.setScalesWhenResized_(True)
+                img.setSize_(NSSize(128.0, 128.0))
+                NSApplication.sharedApplication().setApplicationIconImage_(img)
+                break
+    except (OSError, ImportError, RuntimeError, AttributeError, ValueError, NameError):
+        pass  # 图标设置是纯装饰行为，失败不应影响主功能
 
 
 def main():
@@ -387,9 +621,11 @@ def main():
             height=780,
             min_size=(1000, 660),
             background_color="#f5f5f7",
+            icon=str(GUI_DIR / "app_icon_dock.png"),
         )
         webview.start(set_dock_icon)
     except Exception as exc:
+        # 程序最外层边界：保留宽泛捕获以便弹出友好提示，随后原样 raise，不吞掉异常。
         message = f"桌面窗口启动失败：{exc!r}"
         if getattr(sys, "frozen", False):
             show_error("靶场扫描助手", message)

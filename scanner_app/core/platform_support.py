@@ -19,6 +19,8 @@ from pathlib import Path
 
 
 APP_NAME = "靶场扫描助手"
+# 与 CHANGELOG.md 的最新发行版保持一致；发版时需同步修改两处。
+APP_VERSION = "2.1.2"
 PLAYWRIGHT_BROWSER_DIR_NAME = "playwright-browsers"
 PLAYWRIGHT_RUNTIME_DIR_NAME = "playwright-runtime"
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]

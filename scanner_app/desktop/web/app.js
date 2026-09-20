@@ -4,6 +4,17 @@
 let scanning = false;
 let scanMode = "";          // "public" | "internal"
 let pollTimer = null;
+/* 监控用独立定时器：pollTimer 会被 scan_done / 致命错误清掉，
+   若两者共用，扫描结束时会把还在运行的监控事件流一起断掉。 */
+let watchTimer = null;
+let watchDomains = [];
+/* 当前监控会话号（后端 start_watch 返回）。旧监控的 watch_done 可能比新监控的
+   watch_start 晚到（前端每 400ms 才拉一次事件），没有会话号时它会清掉新监控的
+   定时器，界面从此不再刷新。凡带 session 的 watch_* 事件，会话号对不上一律丢弃。 */
+let watchSession = null;
+/* 点停止后的兜底定时器：正常情况后端会补一条 watch_done 收尾，
+   万一后端已经不在了（事件不会再回来），3 秒后强制复位 UI，避免定时器空转。 */
+let watchStopGuard = null;
 let currentResultsDir = "";
 let shotsEnabled = true;
 
@@ -84,15 +95,90 @@ function logBanner(level, text) {
 }
 
 function setStatus(text, active) {
-  $("statusText").textContent = text;
-  $("statusDot").classList.toggle("on", !!active);
+  /* 左侧状态栏已移除：状态变化写入日志，避免 DOM 悬空引用。
+     active=true 表示运行中，用 warn 级别更显眼；active=false 用 info。 */
+  if (!text) return;
+  log(active ? "warn" : "info", `状态：${text}`);
+}
+
+/* ---------- 动效工具 ---------- */
+
+/* 尊重系统「减弱动态效果」偏好 */
+const REDUCED_MOTION = !!(window.matchMedia &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+/* 统计数字平滑递增：从当前显示值动画过渡到目标值。
+   instant=true 时直接赋值（用于每轮扫描开始前的重置，不播动画）。
+   连续到达的增量事件会从“当前动画位置”继续过渡，不会跳变。 */
+function setStat(id, value, instant) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const to = Number(value) || 0;
+  const from = parseInt(el.textContent, 10) || 0;
+  /* 记录逻辑目标值：动画进行中读取显示值会拿到中间态，
+     摘要条/报告等需要准确数值的地方应读 dataset.statValue。 */
+  el.dataset.statValue = to;
+  if (el._statRAF) { cancelAnimationFrame(el._statRAF); el._statRAF = null; }
+  if (instant || REDUCED_MOTION || from === to) { el.textContent = to; return; }
+  const dur = Math.min(520, 170 + Math.abs(to - from) * 14);
+  const t0 = performance.now();
+  const step = (now) => {
+    const p = Math.min(1, (now - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);                       // easeOutCubic
+    el.textContent = Math.round(from + (to - from) * eased);
+    if (p < 1) el._statRAF = requestAnimationFrame(step);
+    else { el.textContent = to; el._statRAF = null; }
+  };
+  el._statRAF = requestAnimationFrame(step);
+}
+
+/* 读取统计当前值：优先 dataset.statValue（动画中也能读到最终值），
+   未设置时 fallback 到 textContent，防止"目标 undefined 个"。 */
+function currentStat(id) {
+  const el = document.getElementById(id);
+  if (!el) return "0";
+  return el.dataset.statValue || el.textContent || "0";
+}
+
+/* 轻量 toast：操作结果的即时反馈，1.9 秒后自动淡出，不占常驻空间 */
+let toastTimer = null;
+function toast(text, level) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.className = "toast" + (level ? " " + level : "");
+  el.textContent = text;
+  el.classList.remove("show");
+  void el.offsetWidth;                                          // 强制重排以重启动画
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 1900);
+}
+
+/* 列表错峰入场：重新播放入场动画，并按序号递增延迟 */
+function staggerIn(nodes, stepMs, maxMs) {
+  if (REDUCED_MOTION) return;
+  nodes.forEach((el, i) => {
+    if (!el) return;
+    /* 延迟用自定义属性传递：animation 简写被置空再交回时，
+       --stagger-delay 不会跟着被清掉，动画才能带延迟重播。
+       （若直接写 animationDelay，会被随后的 animation="" 简写重置掉。） */
+    el.style.setProperty("--stagger-delay", Math.min(i * stepMs, maxMs) + "ms");
+    el.classList.add("stagger-in");
+    el.style.animation = "none";                                // 彻底移除动画
+    void el.offsetWidth;                                        // 强制重排使其生效
+    el.style.animation = "";                                    // 交回 .stagger-in 的简写，带延迟重播
+  });
 }
 
 function applyPlatformTheme() {
   const ua = navigator.userAgent || "";
   const isWindows = /Windows NT|Windows/i.test(ua);
   const isMac = !isWindows && /Macintosh|Mac OS X/i.test(ua);
-  // Windows 使用与 macOS 相同的页面视觉；只保留平台字体与左侧品牌区差异。
+  // Windows 与 macOS 共用同一套页面视觉（仅平台字体差异），不再依赖历史 Windows 原生主题类。
   // 移除旧的 platform-windows 类，避免历史 Windows 原生主题覆盖共享样式。
   document.body.classList.remove("platform-windows");
   document.body.classList.toggle("windows-shell", isWindows);
@@ -235,6 +321,8 @@ function applySiteTools() {
   const grid = $("resultsGrid");
   grid.textContent = "";
   list.forEach(c => grid.appendChild(c.el));
+  /* 搜索/排序重排后错峰入场，避免整屏卡片瞬间齐刷刷出现 */
+  staggerIn(list.map(c => c.el), 22, 220);
 }
 
 /* 看板图表头部注入导出按钮 */
@@ -313,10 +401,7 @@ function resetResults() {
   $("targetPos").hidden = true;
   $("resultCount").hidden = true;
   $("resultCount").textContent = "0";
-  $("stAlive").textContent = "0";
-  $("stPorts").textContent = "0";
-  $("stSites").textContent = "0";
-  $("stShots").textContent = "0";
+  ["stAlive", "stPorts", "stSites", "stShots"].forEach((id) => setStat(id, 0, true));
   $("btnReport").hidden = true;
   $("publicDash").hidden = true;
   $("scanSummary").hidden = true;
@@ -329,8 +414,7 @@ function resetResults() {
     `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
     `stroke-width="1.4" stroke-linecap="round" opacity=".45"><circle cx="11" cy="11" r="6.5"/>` +
     `<path d="m16 16 4.5 4.5"/></svg>` +
-    `<p>① 填入目标 IP 与端口范围 → ② 点击「开始扫描」</p>` +
-    `<p class="sub">仅展示 Ping 存活、页面可访问且标题非空的靶场</p>`;
+    `<p>填入目标，点击「开始扫描」</p>`;
   grid.appendChild(empty);
 }
 
@@ -349,7 +433,7 @@ function resetHosts() {
   intStats = { alive: 0, Linux: 0, Windows: 0, "未知": 0 };
   intHosts = [];
   $("hostCount").hidden = true;
-  ["stAlive2", "stLinux", "stWin", "stUnknown"].forEach((id) => $(id).textContent = "0");
+  ["stAlive2", "stLinux", "stWin", "stUnknown"].forEach((id) => setStat(id, 0, true));
   $("btnReport2").hidden = true;
   $("internalDash").hidden = true;
   $("scanSummary2").hidden = true;
@@ -360,10 +444,10 @@ function resetHosts() {
 function addHostRow(h) {
   intStats.alive++;
   intStats[h.os_guess]++;
-  $("stAlive2").textContent = intStats.alive;
-  $("stLinux").textContent = intStats.Linux;
-  $("stWin").textContent = intStats.Windows;
-  $("stUnknown").textContent = intStats["未知"];
+  setStat("stAlive2", intStats.alive);
+  setStat("stLinux", intStats.Linux);
+  setStat("stWin", intStats.Windows);
+  setStat("stUnknown", intStats["未知"]);
   $("hostCount").hidden = false;
   $("hostCount").textContent = intStats.alive;
 
@@ -434,7 +518,7 @@ function sortHosts(key) {
 }
 
 function copyToClipboard(text) {
-  const done = () => log("info", `已复制 IP：${text}`);
+  const done = () => { log("info", `已复制 IP：${text}`); toast(`已复制 ${text}`); };
   const fallback = () => {
     try {
       const ta = document.createElement("textarea");
@@ -478,6 +562,7 @@ function setScanning(on, mode) {
     btn.textContent = mode === "internal" ? "停止扫描" : "停止扫描";
     btn.classList.add("stop", "scanning");
     otherBtn.disabled = true;
+    ["btnDiscover", "btnDiscoverResume"].forEach((id) => { const b = $(id); if (b) b.disabled = true; });
     (mode === "internal" ? $("progressArea2") : $("progressArea")).hidden = false;
     (mode === "internal" ? $("statsBar2") : $("statsBar")).hidden = false;
     setStatus("扫描中", true);
@@ -486,6 +571,7 @@ function setScanning(on, mode) {
       b.disabled = false;
       b.classList.remove("stop", "scanning");
     });
+    ["btnDiscover", "btnDiscoverResume"].forEach((id) => { const b = $(id); if (b) b.disabled = false; });
     $("btnScan").textContent = "开始扫描";
     $("btnInternal").textContent = "开始内网扫描";
     setStatus("就绪", false);
@@ -638,8 +724,8 @@ function handleEvent(evt) {
       sumEl.hidden = false;
       sumEl.innerHTML =
         `<span class="sum-item">耗时 <b>${dur} s</b></span>` +
-        `<span class="sum-item">目标 <b>${$("stTargets").textContent}</b> 个</span>` +
-        `<span class="sum-item">ping 存活 <b>${$("stAlive").textContent}</b></span>` +
+        `<span class="sum-item">目标 <b>${currentStat("stTargets")}</b> 个</span>` +
+        `<span class="sum-item">ping 存活 <b>${currentStat("stAlive")}</b></span>` +
         `<span class="sum-item">靶场端口 <b>${evt.open_total}</b></span>` +
         `<span class="sum-item">截图 <b>${evt.screenshot_total || 0}</b></span>`;
       appendDashLink(sumEl, "publicDash");
@@ -699,11 +785,65 @@ function handleEvent(evt) {
 
   /* ---- 公网模式事件 ---- */
   switch (evt.type) {
+    /* ===== 子域发现阶段（靶场改为 lab-XXXXXX.rzsec.cn 后）===== */
+    case "discovery_start": {
+      scanStartTime = Date.now();
+      const tpl = evt.template
+        || (evt.prefix + "?".repeat(evt.length || 0) + evt.suffix);
+      log("info", `子域发现启动：模板 ${tpl}，模式 ${evt.mode}，探测端口 ${evt.port}`
+        + (evt.resume_from ? `，从检查点续扫（已跳过 ${evt.resume_from}）` : ""));
+      setBar("", 0, "子域发现中…");
+      break;
+    }
+    case "discovery_progress": {
+      const cap = evt.target || evt.total;
+      const pct = cap ? Math.min(100, (evt.checked / cap) * 100) : 0;
+      const eta = (evt.eta != null) ? ` · 预计剩余 ${evt.eta}s` : "";
+      setBar("", pct, `已探测 ${evt.checked.toLocaleString()}（上限 ${cap.toLocaleString()}）`
+        + ` · 命中 ${evt.found} · ${evt.rate}/s · 已用 ${evt.elapsed}s${eta}`);
+      break;
+    }
+    case "domain_found":
+      log("success", `命中靶场子域 ${evt.domain}（${evt.ip}:${evt.port} 状态 ${evt.status} · ${evt.title || "(无标题)"}）`);
+      break;
+    case "discovery_done":
+      log("info", `子域发现完成：探测 ${evt.checked.toLocaleString()}，命中 ${evt.found} 个活靶场，耗时 ${evt.duration}s`
+        + (evt.found ? "；开始对命中域名做端口扫描与截图…" : "；未发现活靶场，请稍后再次运行累积命中"));
+      break;
+
+    /* ---- 已知子域轮询监控 ---- */
+    case "watch_start":
+      watchDomains = evt.domains || [];
+      renderWatchList(watchDomains);
+      $("watchList").hidden = false;
+      $("btnWatchStop").hidden = false;
+      $("btnWatchStart").hidden = true;
+      $("watchStatus").textContent =
+        `监控中：${watchDomains.length} 个 · 每 ${evt.interval}s 一轮 · 端口 ${evt.port}`;
+      log("info", `开始监控 ${watchDomains.length} 个已知子域，每 ${evt.interval} 秒轮询一次（端口 ${evt.port}）`);
+      break;
+    case "watch_probe":
+      updateWatchItem(evt.domain, evt.live, evt.title);
+      break;
+    case "watch_found":
+      updateWatchItem(evt.domain, true, evt.title);
+      log("success", `★ 靶场已拉起：${evt.domain}（${evt.ip}:${evt.port} 状态 ${evt.status} · ${evt.title || "(无标题)"}）`
+        + (evt.first ? "" : "（由离线恢复为在线）"));
+      toast(`靶场已上线：${evt.domain}`);
+      break;
+    case "watch_round":
+      $("watchStatus").textContent = `监控中：第 ${evt.round} 轮 · 在线 ${evt.alive}/${evt.total}`;
+      break;
+    case "watch_done":
+      finalizeWatchUI(`监控结束：${evt.rounds} 轮，在线 ${evt.alive}/${evt.total}`);
+      log("info", `监控结束：共 ${evt.rounds} 轮，在线 ${evt.alive}/${evt.total} 个`);
+      break;
+
     case "scan_start":
       currentResultsDir = evt.results_dir;
       scanStartTime = Date.now();
       targetsCount = evt.targets.length;
-      $("stTargets").textContent = targetsCount;
+      setStat("stTargets", targetsCount);
       const pdesc = evt.ports ? `端口列表（${evt.ports.length} 个）` : `端口 ${evt.port_start}-${evt.port_end}`;
       const tlist = evt.targets || [];
       const tdesc = tlist.length > 5
@@ -722,7 +862,7 @@ function handleEvent(evt) {
       break;
     case "ping":
       if (evt.alive) {
-        $("stAlive").textContent = (parseInt($("stAlive").textContent, 10) || 0) + 1;
+        setStat("stAlive", (parseInt($("stAlive").textContent, 10) || 0) + 1);
         log("success", `ping ${evt.ip} 通${evt.latency_ms != null ? `（${evt.latency_ms.toFixed(1)} ms）` : ""}`);
       } else {
         log("info", `ping ${evt.ip} 不通，已过滤该目标`);
@@ -739,9 +879,9 @@ function handleEvent(evt) {
       pubPorts.push(evt);
       $("resultCount").hidden = false;
       $("resultCount").textContent = openCount;
-      $("stPorts").textContent = openCount;
+      setStat("stPorts", openCount);
       if (evt.is_http) {
-        $("stSites").textContent = (parseInt($("stSites").textContent, 10) || 0) + 1;
+        setStat("stSites", (parseInt($("stSites").textContent, 10) || 0) + 1);
       }
       addSiteCard(evt);
       log("success", `${evt.ip}:${evt.port} 开放  ${evt.scheme} 状态 ${evt.status}  title: ${evt.title}`);
@@ -753,7 +893,7 @@ function handleEvent(evt) {
       break;
     case "screenshot_done":
       if (evt.ok) {
-        $("stShots").textContent = (parseInt($("stShots").textContent, 10) || 0) + 1;
+        setStat("stShots", (parseInt($("stShots").textContent, 10) || 0) + 1);
         log("info", `[截图] ${evt.ip}:${evt.port} 完成`);
       } else {
         log("warn", `[截图] ${evt.ip}:${evt.port} 失败：${evt.error || ""}`);
@@ -767,11 +907,117 @@ function handleEvent(evt) {
   }
 }
 
+/* 事件处理里抛错时不要把异常吞干净：早先这里是空 catch，
+   一次 ReferenceError（辅助函数作用域写错）被完全隐藏，
+   现象是「后端线程在跑、界面毫无反应」，排查成本极高。
+   现在前 3 次失败会写进日志面板并 console.error，之后才降级为静默。 */
+let pollErrCount = 0;
+
+/* 判断是否为上一轮监控遗留的事件（见 watchSession 注释） */
+function isStaleWatchEvent(evt) {
+  return typeof evt.type === "string" && evt.type.startsWith("watch_")
+    && evt.session != null && watchSession != null
+    && String(evt.session) !== String(watchSession);
+}
+
 async function poll() {
   try {
     const events = await pywebview.api.poll_events(60);  // 分批，避免一次渲染过多事件卡主线程
-    (events || []).forEach(handleEvent);
-  } catch (e) { /* 窗口关闭等场景忽略 */ }
+    (events || []).forEach((evt) => {
+      if (evt && isStaleWatchEvent(evt)) return;
+      handleEvent(evt);
+    });
+  } catch (e) {
+    if (pollErrCount < 3) {
+      pollErrCount++;
+      console.error("[poll] 事件处理失败:", e);
+      try { log("error", `事件处理异常：${e && e.message ? e.message : e}`); } catch (_) { /* 日志区本身异常则放弃 */ }
+    }
+  }
+}
+
+/* ---------- 已知子域轮询监控 ----------
+   这几个函数必须是顶层作用域：handleEvent 也是顶层的，若把它们写进 bindUI() 内部，
+   事件回调里会 ReferenceError，而 poll() 的 catch 会把它静默吞掉 —— 表现为
+   「后端线程明明在跑，界面却毫无反应」。踩过一次，别再挪回 bindUI。 */
+function renderWatchList(doms) {
+  const list = $("watchList");
+  list.textContent = "";
+  doms.forEach((d) => {
+    const item = document.createElement("div");
+    item.className = "watch-item pending";
+    item.dataset.domain = d;          // 用 dataset 匹配，避免域名里的 . - 破坏选择器
+    const dot = document.createElement("span");
+    dot.className = "watch-dot";
+    const dom = document.createElement("span");
+    dom.className = "wdom";
+    dom.textContent = d;
+    const title = document.createElement("span");
+    title.className = "wtitle";
+    title.textContent = "待探测";
+    item.append(dot, dom, title);
+    list.appendChild(item);
+  });
+}
+
+function updateWatchItem(domain, live, title) {
+  for (const item of $("watchList").children) {
+    if (item.dataset.domain !== domain) continue;
+    item.classList.remove("pending", "up", "down");
+    item.classList.add(live ? "up" : "down");
+    const t = item.querySelector(".wtitle");
+    if (t) t.textContent = live ? (title || "已上线") : "未上线";
+    return;
+  }
+}
+
+function clearWatchTimer() {
+  if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+}
+
+/* 收尾：把监控 UI 复位并写入终态文案 */
+function finalizeWatchUI(statusText) {
+  clearWatchTimer();
+  if (watchStopGuard) { clearTimeout(watchStopGuard); watchStopGuard = null; }
+  watchSession = null;
+  $("btnWatchStop").hidden = true;
+  $("btnWatchStart").hidden = false;
+  if (statusText) $("watchStatus").textContent = statusText;
+}
+
+async function startWatch() {
+  const doms = ($("inpWatchDomains").value || "").trim();
+  if (!doms) { toast("请先填写要监控的子域或随机位", "error"); return; }
+  const interval = parseInt($("inpWatchInterval").value, 10) || 30;
+  const port = parseInt($("inpWatchPort").value, 10) || 443;
+  if (!(interval >= 5 && interval <= 3600)) { toast("轮询间隔需在 5-3600 秒之间", "error"); return; }
+  if (!(port >= 1 && port <= 65535)) { toast("监控端口需在 1-65535 之间", "error"); return; }
+  const res = await pywebview.api.start_watch({
+    domains: doms, interval, port, timeout: 2.0,
+    stop_on_all_up: $("inpWatchStopAll").checked,
+  });
+  if (!res || !res.ok) {
+    const msg = (res && res.error) || "启动监控失败";
+    log("error", msg); toast(msg, "error"); return;
+  }
+  clearWatchTimer();
+  if (watchStopGuard) { clearTimeout(watchStopGuard); watchStopGuard = null; }
+  // 先认领会话号，再起定时器：否则拉到的第一批新事件会被判为过期而丢弃
+  watchSession = res.session != null ? String(res.session) : null;
+  watchTimer = setInterval(poll, 400);   // 事件量小，轮询无需像扫描那样密集
+  toast(`已开始监控 ${res.domains.length} 个子域`);
+}
+
+function stopWatch() {
+  pywebview.api.stop_watch();
+  /* 这里故意不立刻 clearWatchTimer：后端收到取消后还会补一条 watch_done，
+     带着「共几轮、在线几个」的收尾统计。立刻停轮询的话这条事件永远取不回来，
+     状态栏会僵在「监控中」。3 秒兜底保证后端已死时 UI 也能复位。 */
+  $("watchStatus").textContent = "正在停止监控…";
+  $("btnWatchStop").hidden = true;   // 先禁掉重复点击
+  if (watchStopGuard) clearTimeout(watchStopGuard);
+  watchStopGuard = setTimeout(() => finalizeWatchUI("已停止监控"), 3000);
+  log("info", "已停止监控");
 }
 
 /* ---------- 页面 ---------- */
@@ -1456,11 +1702,48 @@ async function init() {
   } catch (e) {
     log("error", "读取配置失败：" + e);
   }
+  /* 初始化所有统计元素的 data-stat-value，避免摘要条/报告在尚未扫描时读到 undefined */
+  ["stTargets", "stAlive", "stPorts", "stSites", "stShots",
+   "stAlive2", "stLinux", "stWin", "stUnknown"].forEach((id) => {
+    const el = $(id);
+    if (el && !el.dataset.statValue) el.dataset.statValue = el.textContent || "0";
+  });
   /* 初始化后执行一次实时校验，让按钮可用性即时生效 */
   updatePublicValidity();
   updateInternalValidity();
+  await loadAppInfo();
   log("info", "环境就绪 · 公网模式扫描 Web 靶场，内网模式请先连接向日葵 VPN");
   $("consoleCard").classList.add("collapsed");
+}
+
+/* 「关于」页环境信息：版本 / 运行平台 / Python / 截图能力 / 结果目录 */
+async function loadAppInfo() {
+  try {
+    const info = await pywebview.api.get_app_info();
+    $("envVersion").textContent = "v" + info.version;
+    const platMap = { windows: "Windows", macos: "macOS", other: "其它" };
+    $("envPlatform").textContent = platMap[info.platform] || info.platform;
+    $("envPython").textContent = info.python;
+
+    const shots = $("envShots");
+    if (info.screenshots_available) {
+      shots.textContent = "可用（Playwright Chromium）";
+      shots.classList.add("env-ok");
+    } else {
+      shots.textContent = "不可用" + (info.screenshots_error ? `：${info.screenshots_error}` : "");
+      shots.classList.add("env-no");
+    }
+    $("envResults").textContent = info.results_root;
+
+    /* 打开结果目录：后端 open_path 会校验路径必须位于默认结果目录内 */
+    $("btnOpenResults").addEventListener("click", async () => {
+      const res = await pywebview.api.open_path(info.results_root);
+      if (res && res.ok) toast("已打开结果目录");
+      else toast((res && res.error) || "打开结果目录失败", "error");
+    });
+  } catch (e) {
+    log("error", "读取应用信息失败：" + e);
+  }
 }
 
 function bindUI() {
@@ -1488,6 +1771,18 @@ function bindUI() {
     }
     const p = collectPublicParams();
     if (!p) return;
+    /* 域名目标自动识别：含非 IPv4 字面量的目标视为域名，跳过 Ping、只探 80 端口。
+       仅当「全部为域名」时把显示端口统一设为 80；若混填了 IP，则保留各自逻辑
+       （后端 run_scan 会按目标逐个判断：IP 走原端口范围，域名只探 80）。 */
+    const targetsArr = p.targets.split(",").map(t => t.trim()).filter(Boolean);
+    const hasDomain = targetsArr.some(t => !/^\d{1,3}(\.\d{1,3}){3}$/.test(t));
+    const hasIP = targetsArr.some(t => /^\d{1,3}(\.\d{1,3}){3}$/.test(t));
+    if (hasDomain && !hasIP) {
+      p.ps = 80; p.pe = 80;
+      log("info", "检测到域名目标，自动按 80 端口验证（跳过 ICMP Ping，仅保留有标题的靶场页面）");
+    } else if (hasDomain && hasIP) {
+      log("info", "混合目标：IP 按端口范围扫描，域名自动跳过 Ping 并只探 80 端口");
+    }
     /* 前端先做一次目标去重并提示（后端也会去重，这里让用户感知） */
     const raw = p.targets.split(",").map(t => t.trim()).filter(Boolean);
     const uniq = [...new Set(raw)];
@@ -1534,6 +1829,129 @@ function bindUI() {
     setBar("2", 0, "准备中…");
     pollTimer = setInterval(poll, 250);
   });
+
+  /* 子域发现（靶场改为 lab-XXXXXX.rzsec.cn 后） */
+  async function startDiscovery(resume) {
+    let tpl = $("inpDiscoverTpl").value.trim();
+    if (!tpl) { tpl = $("inpDiscoverTpl").getAttribute("placeholder") || ""; }
+    tpl = tpl.trim();
+    if (!tpl) { log("error", "请填写子域模板，如 lab-??????.rzsec.cn"); return; }
+    const dp = parseInt($("inpDiscoverPort").value, 10);
+    const dth = parseInt($("inpDiscoverThreads").value, 10);
+    const dlim = parseInt($("inpDiscoverLimit").value, 10) || 0;
+    const dfl = parseInt($("inpDiscoverFoundLimit").value, 10) || 0;
+    if (!(dp >= 1 && dp <= 65535)) { log("error", "发现探测端口需在 1-65535 之间"); return; }
+    if (!(dth >= 1 && dth <= 2000)) { log("error", "发现线程需在 1-2000 之间"); return; }
+    const dtimeout = parseFloat($("inpDiscoverTimeout").value) || 0.8;
+    if (!(dtimeout >= 0.1 && dtimeout <= 10)) { log("error", "发现超时需在 0.1-10 秒之间"); return; }
+    const opts = {
+      template: tpl,
+      charset: discoverCharset(),
+      port_start: parseInt($("inpPortStart").value, 10) || 8000,
+      port_end: parseInt($("inpPortEnd").value, 10) || 8020,
+      threads: parseInt($("inpThreads").value, 10) || 100,
+      timeout: parseFloat($("inpTimeout").value) || 1.0,
+      discover_connect_timeout: dtimeout,
+      discover_read_timeout: dtimeout * 1.5,
+      screenshots: $("inpShots").checked,
+      discover_port: dp,
+      discover_threads: dth,
+      limit: dlim || null,   // 0 视为不限（穷举整个 21.8 亿空间，通常不建议）
+      found_limit: dfl,
+      mode: $("inpDiscoverSeq").checked ? "sequential" : "random",
+      fast: $("inpDiscoverFast").checked,
+      resume: !!resume,
+    };
+    const res = await pywebview.api.start_discovery(opts);
+    if (!res || !res.ok) { log("error", (res && res.error) || "启动子域发现失败"); return; }
+    scanMode = "public";
+    resetResults();
+    $("statsBar").hidden = false;
+    setScanning(true, "public");
+    setBar("", 0, "子域发现中…");
+    pollTimer = setInterval(poll, 250);
+  }
+  const discoverPanel = $("discoverPanel");
+  const discoverToggle = $("btnToggleDiscover");
+  if (discoverToggle && discoverPanel) {
+    discoverToggle.addEventListener("click", () => {
+      const expanded = discoverPanel.classList.toggle("expanded");
+      discoverToggle.classList.toggle("expanded", expanded);
+      const label = discoverToggle.querySelector("span");
+      if (label) label.textContent = expanded ? "收起发现" : "子域发现";
+    });
+  }
+
+  /* 字符集：下拉选择或自定义输入 */
+  function discoverCharset() {
+    const sel = $("inpDiscoverCharset");
+    if (!sel) return "";
+    if (sel.value === "custom") {
+      return ($("inpDiscoverCharsetCustom").value || "").trim();
+    }
+    return sel.value;
+  }
+
+  /* 估算搜索空间与耗时：穷举 36^6 需数百天，必须让用户在开始前就看清代价。
+     速率取实测值（通配符+长连接+443 直连约 90/s，且服务端限速使加线程无效）。 */
+  const DISCOVER_RATE = 90;
+  function discoverWildcardCount(tpl) {
+    const m = /[?*]+/.exec(tpl || "");
+    return m ? m[0].length : 0;
+  }
+  function fmtDuration(seconds) {
+    if (!isFinite(seconds)) return "—";
+    if (seconds < 60) return `${Math.round(seconds)} 秒`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+    if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} 小时`;
+    return `${(seconds / 86400).toFixed(0)} 天`;
+  }
+  function updateDiscoverEstimate() {
+    const el = $("discoverEstimate");
+    if (!el) return;
+    const cs = discoverCharset();
+    const n = discoverWildcardCount($("inpDiscoverTpl").value);
+    if (!cs) {
+      el.innerHTML = '<span class="warn">字符集为空</span>，请选择一个预设或填写自定义字符集。';
+      return;
+    }
+    const total = Math.pow(cs.length, n);
+    const full = total / DISCOVER_RATE;
+    const limit = parseInt($("inpDiscoverLimit").value, 10) || 0;
+    const plan = limit > 0 ? Math.min(limit, total) : total;
+    const planSec = plan / DISCOVER_RATE;
+    const cls = planSec > 86400 ? "warn" : "ok";
+    el.innerHTML =
+      `组合空间 <b>${cs.length}<sup>${n}</sup> = ${total.toLocaleString()}</b> 个，` +
+      `按实测约 ${DISCOVER_RATE}/s：本次计划探测 <b>${plan.toLocaleString()}</b> 个，` +
+      `预计 <b class="${cls}">${fmtDuration(planSec)}</b>` +
+      (limit > 0 && total > plan
+        ? `（约占全空间 ${(plan / total * 100).toFixed(2)}%，随机无放回采样）`
+        : `（<span class="${cls}">全量穷举</span>）`);
+  }
+
+  ["inpDiscoverCharset", "inpDiscoverCharsetCustom", "inpDiscoverTpl", "inpDiscoverLimit"]
+    .forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener("input", updateDiscoverEstimate);
+      if (el) el.addEventListener("change", updateDiscoverEstimate);
+    });
+  const csSel = $("inpDiscoverCharset");
+  if (csSel) {
+    csSel.addEventListener("change", () => {
+      const f = $("fieldCustomCharset");
+      if (f) f.hidden = csSel.value !== "custom";
+    });
+  }
+  updateDiscoverEstimate();
+
+  /* 监控按钮：startWatch / stopWatch 定义在顶层（handleEvent 要调用其辅助函数），
+     这里只做绑定，不要再塞进 bindUI 内部。 */
+  $("btnWatchStart").addEventListener("click", startWatch);
+  $("btnWatchStop").addEventListener("click", stopWatch);
+
+  $("btnDiscover").addEventListener("click", () => startDiscovery(false));
+  $("btnDiscoverResume").addEventListener("click", () => startDiscovery(true));
 
   /* 控制台折叠 / 清空 */
   $("consoleToggle").addEventListener("click", (e) => {
@@ -1594,8 +2012,10 @@ function bindUI() {
       a.download = btn.dataset.canvas + ".png";
       a.click();
       log("info", `已导出图表：${btn.dataset.canvas}.png`);
+      toast(`已导出 ${btn.dataset.canvas}.png`);
     } catch (err) {
       log("error", "导出图表失败：" + err);
+      toast("导出图表失败", "error");
     }
   });
 

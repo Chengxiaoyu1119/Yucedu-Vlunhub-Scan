@@ -356,11 +356,15 @@ def _charts_section(specs):
 # ================= 公网 Web 靶场报告 =================
 
 def _qualified_public_results(results):
-    """报告层再过滤一次，避免旧版或外部调用写入无效公网目标。"""
+    """报告层再过滤一次，仅保留具备可展示靶场页面的端口（开放 + HTTP + 有标题）。
+
+    注意：不再要求 ping 存活。域名/子域靶场常禁 ICMP，扫描层已通过
+    is_qualified_target(require_ping=False) 完成合格判定并把结果传入本函数，
+    这里若再按 ping 过滤会把合法的域名靶场丢弃。端口质量过滤本身已足够
+    排除无效目标。
+    """
     qualified = []
     for target in results:
-        if not (target.get("ping") or {}).get("alive"):
-            continue
         ports = {
             str(key): port
             for key, port in (target.get("ports") or {}).items()

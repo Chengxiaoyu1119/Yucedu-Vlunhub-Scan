@@ -14,24 +14,14 @@
 
   <!-- ============ 侧边栏 ============ -->
   <aside class="sidebar">
-    <div class="brand" aria-label="靶场扫描助手">
-      <span class="brand-mark" aria-hidden="true">
-        <img src="app_icon.png" alt="">
-      </span>
-      <span class="brand-copy">
-        <strong>靶场扫描助手</strong>
-        <small>Range Scanner</small>
-      </span>
-    </div>
-    <div class="nav-group-label first">扫描模式</div>
     <nav class="nav">
-      <button class="nav-item active" data-page="scan">
+      <button class="nav-item active" data-page="scan" title="公网 Web 靶场">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <circle cx="12" cy="12" r="2.4"/><path d="M4.2 19.8 9.5 9.5l10.3-5.3L14.5 14.5z"/>
         </svg>
         <span>公网 Web 靶场</span>
       </button>
-      <button class="nav-item" data-page="internal">
+      <button class="nav-item" data-page="internal" title="内网穿透靶场">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <rect x="3" y="4" width="18" height="7" rx="1.6"/><rect x="3" y="13.5" width="18" height="7" rx="1.6"/>
           <circle cx="6.6" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.6" cy="17" r=".5" fill="currentColor"/>
@@ -40,15 +30,14 @@
       </button>
     </nav>
 
-    <div class="nav-group-label">工具</div>
     <nav class="nav">
-      <button class="nav-item" data-page="history">
+      <button class="nav-item" data-page="history" title="历史记录">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.2 1.9"/>
         </svg>
         <span>历史记录</span>
       </button>
-      <button class="nav-item" data-page="about">
+      <button class="nav-item" data-page="about" title="关于">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.2"/><circle cx="12" cy="7.8" r=".4" fill="currentColor"/>
         </svg>
@@ -56,10 +45,6 @@
       </button>
     </nav>
 
-    <div class="sidebar-footer">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">就绪</span>
-    </div>
   </aside>
 
   <!-- ============ 主区域 ============ -->
@@ -71,49 +56,147 @@
       <section id="page-scan" class="page active">
         <header class="page-header">
           <h1>公网 Web 靶场</h1>
-          <p class="subtitle">存活探测 · 端口递增扫描 · 仅保留可访问且有标题的靶场页面</p>
         </header>
 
         <div class="card config-card">
-          <div class="config-grid">
-            <label class="field field-wide">
-              <span>目标 IP（逗号分隔）</span>
-              <input id="inpTargets" type="text" spellcheck="false"
-                     placeholder="43.139.231.237,43.139.149.11">
-            </label>
-            <label class="field">
-              <span>起始端口</span>
-              <input id="inpPortStart" type="number" min="1" max="65535">
-            </label>
-            <label class="field">
-              <span>结束端口</span>
-              <input id="inpPortEnd" type="number" min="1" max="65535">
-            </label>
-            <label class="field">
-              <span>并发线程</span>
-              <input id="inpThreads" type="number" min="1" max="1000">
-            </label>
-            <label class="field">
-              <span>超时（秒）</span>
-              <input id="inpTimeout" type="number" min="0.5" max="30" step="0.5">
-            </label>
-            <div class="field field-check">
-              <span>首页截图</span>
-              <label class="switch"><input type="checkbox" id="inpShots" checked><i></i></label>
+          <div class="scan-section">
+            <div class="config-grid">
+              <label class="field field-wide">
+                <span>目标 IP 或域名（逗号分隔）</span>
+                <input id="inpTargets" type="text" spellcheck="false"
+                       placeholder="43.139.231.237 或 lab-rw2zyp.rzsec.cn">
+              </label>
+              <label class="field">
+                <span>起始端口</span>
+                <input id="inpPortStart" type="number" min="1" max="65535">
+              </label>
+              <label class="field">
+                <span>结束端口</span>
+                <input id="inpPortEnd" type="number" min="1" max="65535">
+              </label>
+              <label class="field">
+                <span>并发线程</span>
+                <input id="inpThreads" type="number" min="1" max="1000">
+              </label>
+              <label class="field">
+                <span>超时（秒）</span>
+                <input id="inpTimeout" type="number" min="0.5" max="30" step="0.5">
+              </label>
+              <div class="field field-check">
+                <span>首页截图</span>
+                <label class="switch"><input type="checkbox" id="inpShots" checked><i></i></label>
+              </div>
+              <label class="field field-wide2">
+                <span>端口列表（可选，逗号分隔）</span>
+                <input id="inpPortsList" type="text" spellcheck="false"
+                       placeholder="留空则按上方端口范围扫描；填列表则优先扫描这些端口，如 21,22,80,443,3306,6379,8080">
+              </label>
             </div>
-            <label class="field field-wide2">
-              <span>端口列表（可选，逗号分隔）</span>
-              <input id="inpPortsList" type="text" spellcheck="false"
-                     placeholder="留空则按上方端口范围扫描；填列表则优先扫描这些端口，如 21,22,80,443,3306,6379,8080">
-            </label>
+            <div class="config-actions">
+              <button id="btnScan" class="btn-primary">开始扫描</button>
+              <span class="preset-label">端口预设</span>
+              <div class="preset-group">
+                <button class="preset-btn" data-ps="80" data-pe="8999">Web 常用</button>
+                <button class="preset-btn" data-ports="21,22,23,25,53,80,110,135,139,143,161,389,443,445,465,514,587,636,873,993,995,1080,1099,1433,1521,2049,2181,2375,2379,3000,3306,3389,4369,5000,5432,5601,5672,5900,5984,6000,6379,7001,7002,8000,8008,8009,8010,8020,8043,8060,8080,8081,8085,8086,8088,8090,8161,8200,8443,8888,8899,9000,9001,9042,9092,9096,9200,9300,9418,9999,10000,10050,10250,11211,15672,16379,18080,27017,27018,28017,50000,60000,65535">全量端口</button>
+                <button class="preset-btn" data-ps="8000" data-pe="8020">恢复默认</button>
+              </div>
+              <button class="discover-toggle" id="btnToggleDiscover" type="button">
+                <span>子域发现</span>
+                <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m6 9 6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
           </div>
-          <div class="config-actions">
-            <button id="btnScan" class="btn-primary">开始扫描</button>
-            <span class="preset-label">端口预设</span>
-            <div class="preset-group">
-              <button class="preset-btn" data-ps="80" data-pe="8999">Web 常用</button>
-              <button class="preset-btn" data-ports="21,22,23,25,53,80,110,135,139,143,161,389,443,445,465,514,587,636,873,993,995,1080,1099,1433,1521,2049,2181,2375,2379,3000,3306,3389,4369,5000,5432,5601,5672,5900,5984,6000,6379,7001,7002,8000,8008,8009,8010,8020,8043,8060,8080,8081,8085,8086,8088,8090,8161,8200,8443,8888,8899,9000,9001,9042,9092,9096,9200,9300,9418,9999,10000,10050,10250,11211,15672,16379,18080,27017,27018,28017,50000,60000,65535">全量端口</button>
-              <button class="preset-btn" data-ps="8000" data-pe="8020">恢复默认</button>
+
+          <div class="discover-panel" id="discoverPanel">
+            <div class="discover-panel-inner">
+            <div class="discover-panel-header">
+              <span>子域发现</span>
+            </div>
+            <div class="config-grid">
+              <label class="field field-wide">
+                <span>靶场子域模板</span>
+                <input id="inpDiscoverTpl" type="text" spellcheck="false"
+                       value="lab-??????.rzsec.cn"
+                       placeholder="lab-??????.rzsec.cn（? 为随机位，字母+数字）">
+              </label>
+              <label class="field">
+                <span>字符集（决定搜索空间）</span>
+                <select id="inpDiscoverCharset" class="tool-select">
+                  <option value="abcdefghijklmnopqrstuvwxyz0123456789">字母+数字 (36)</option>
+                  <option value="abcdefghijklmnopqrstuvwxyz">仅小写字母 (26)</option>
+                  <option value="0123456789abcdef">十六进制 (16)</option>
+                  <option value="0123456789">仅数字 (10)</option>
+                  <option value="custom">自定义…</option>
+                </select>
+              </label>
+              <label class="field" id="fieldCustomCharset" hidden>
+                <span>自定义字符集</span>
+                <input id="inpDiscoverCharsetCustom" type="text" spellcheck="false"
+                       placeholder="如 abcdef0123456789">
+              </label>
+              <label class="field">
+                <span>发现探测端口</span>
+                <input id="inpDiscoverPort" type="number" min="1" max="65535" value="80">
+              </label>
+              <label class="field">
+                <span>发现线程</span>
+                <input id="inpDiscoverThreads" type="number" min="1" max="2000" value="300">
+              </label>
+              <label class="field">
+                <span>发现超时(秒)</span>
+                <input id="inpDiscoverTimeout" type="number" min="0.1" max="10" step="0.1" value="0.8">
+              </label>
+              <label class="field">
+                <span>最多探测（0=不限，不推荐）</span>
+                <input id="inpDiscoverLimit" type="number" min="0" value="50000">
+              </label>
+              <label class="field">
+                <span>命中即停（0=不限）</span>
+                <input id="inpDiscoverFoundLimit" type="number" min="0" value="0">
+              </label>
+            </div>
+            <p class="discover-estimate" id="discoverEstimate"></p>
+            <div class="config-actions">
+              <button id="btnDiscover" class="btn-primary">开始子域发现</button>
+              <button id="btnDiscoverResume" class="btn-ghost">从检查点续扫</button>
+              <label class="field-check"><span>顺序模式</span>
+                <label class="switch"><input type="checkbox" id="inpDiscoverSeq"><i></i></label></label>
+              <label class="field-check"><span>快速模式</span>
+                <label class="switch"><input type="checkbox" id="inpDiscoverFast"><i></i></label></label>
+            </div>
+
+            <div class="watch-block">
+              <div class="watch-head">
+                <span>监控已知子域</span>
+                <em>靶场按需随机生成域名、拉起需要时间；对已知 ID 轮询等待，比盲扫 21.8 亿命中率高得多</em>
+              </div>
+              <label class="field field-wide">
+                <span>子域或随机位（逗号 / 换行分隔；只填随机位会自动套用 lab-??????.rzsec.cn）</span>
+                <textarea id="inpWatchDomains" rows="3" spellcheck="false"
+                          placeholder="5n36ys&#10;lab-rw2zyp.rzsec.cn"></textarea>
+              </label>
+              <div class="config-grid">
+                <label class="field">
+                  <span>轮询间隔（秒，5-3600）</span>
+                  <input id="inpWatchInterval" type="number" min="5" max="3600" value="30">
+                </label>
+                <label class="field">
+                  <span>监控端口</span>
+                  <input id="inpWatchPort" type="number" min="1" max="65535" value="443">
+                </label>
+                <label class="field field-check"><span>全部上线即停</span>
+                  <label class="switch"><input type="checkbox" id="inpWatchStopAll"><i></i></label></label>
+              </div>
+              <div class="config-actions">
+                <button id="btnWatchStart" class="btn-primary">开始监控</button>
+                <button id="btnWatchStop" class="btn-open" hidden>停止监控</button>
+                <span class="watch-status" id="watchStatus"></span>
+              </div>
+              <div class="watch-list" id="watchList" hidden></div>
+            </div>
             </div>
           </div>
         </div>
@@ -172,8 +255,7 @@
                  stroke-width="1.4" stroke-linecap="round" opacity=".45">
               <circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>
             </svg>
-            <p>① 填入目标 IP 与端口范围 → ② 点击「开始扫描」</p>
-            <p class="sub">完成后可在此查看站点卡片与首页截图，支持搜索与排序</p>
+            <p>填入目标，点击「开始扫描」</p>
           </div>
         </div>
 
@@ -211,7 +293,6 @@
       <section id="page-internal" class="page">
         <header class="page-header">
           <h1>内网穿透靶场</h1>
-          <p class="subtitle">主机存活发现 · 系统判断（Linux / Windows）· 无凭据探测</p>
         </header>
 
         <div class="notice">
@@ -331,8 +412,7 @@
                        stroke-width="1.4" stroke-linecap="round" opacity=".45">
                     <rect x="3" y="5" width="18" height="6.5" rx="1.6"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.6"/>
                   </svg>
-                  <p>① 连接向日葵 VPN → ② 填写网段 → ③ 点击「开始内网扫描」</p>
-                  <p class="sub">结果自动按 Linux / Windows / 未识别 分组，并生成分类报告</p>
+                  <p>连接 VPN 后填写网段，点击「开始内网扫描」</p>
                 </div>
               </td></tr>
             </tbody>
@@ -344,7 +424,6 @@
       <section id="page-history" class="page">
         <header class="page-header">
           <h1>历史记录</h1>
-          <p class="subtitle">最近的扫描运行 · 可查看分类报告或在系统文件管理器中打开</p>
         </header>
         <div class="card history-card" id="historyCard">
           <div class="history-tools">
@@ -359,19 +438,26 @@
       <section id="page-about" class="page">
         <header class="page-header">
           <h1>关于</h1>
-          <p class="subtitle">靶场扫描助手 · macOS / Windows</p>
         </header>
         <div class="card about-card">
-          <p>双模式靶场信息收集工具：</p>
           <ul>
-            <li><b>公网 Web 靶场</b> — ICMP 存活探测、端口递增扫描、HTTP/HTTPS 首页抓取、Playwright 首页截图</li>
-            <li><b>内网穿透靶场</b> — ICMP + TCP 存活发现、TTL / 端口指纹 / SSH Banner 多信号系统判断（无需凭据）</li>
+            <li><b>公网 Web 靶场</b> — ICMP 存活探测、端口扫描、HTTP/HTTPS 首页抓取、Playwright 截图</li>
+            <li><b>内网穿透靶场</b> — ICMP + TCP 存活发现、TTL / 端口指纹 / SSH Banner 系统判断（无需凭据）</li>
+            <li><b>自动报告</b> — 每次扫描生成 report.html（内嵌截图）/ .md / .csv / .json</li>
           </ul>
-          <p>每次扫描自动生成分类报告：report.html（内嵌截图）/ report.md / report.csv / report.json。</p>
-          <ul>
-            <li>命令行：<code>python3 -m scanner_app.cli.public</code></li>
-            <li>图形界面：macOS 双击 <code>launchers/启动靶场扫描.command</code>，Windows 双击 <code>launchers/启动靶场扫描.vbs</code></li>
-          </ul>
+
+          <div class="env-block">
+            <div class="env-row"><span>版本</span><b id="envVersion">—</b></div>
+            <div class="env-row"><span>运行环境</span><b id="envPlatform">—</b></div>
+            <div class="env-row"><span>Python</span><b id="envPython">—</b></div>
+            <div class="env-row"><span>首页截图</span><b id="envShots">—</b></div>
+            <div class="env-row env-row-path"><span>结果目录</span><b id="envResults" class="env-path">—</b></div>
+          </div>
+
+          <div class="about-actions">
+            <button class="btn-open" id="btnOpenResults">打开结果目录</button>
+          </div>
+
           <p class="footnote">仅用于授权靶场环境的安全教学与测试；内网模式不做爆破、不登录、不利用漏洞。</p>
         </div>
       </section>

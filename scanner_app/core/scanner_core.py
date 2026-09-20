@@ -135,10 +135,11 @@ def fetch_http(ip: str, port: int, timeout: float) -> dict:
         except urllib.error.HTTPError as e:  # 4xx/5xx 也说明是 HTTP 服务
             try:
                 body = e.read(MAX_BODY)
-            except Exception:
+            except (OSError, ValueError):
                 body = b""
             return _http_result(scheme, e.code, e.headers, body, url, url)
-        except Exception as e:  # 连不上 / 超时 / 非 HTTP 协议
+        except (urllib.error.URLError, OSError, ssl.SSLError, socket.timeout,
+                UnicodeError, ValueError) as e:  # 连不上 / 超时 / 非 HTTP 协议
             last_err = f"{type(e).__name__}: {e}"
     return {"is_http": False, "error": last_err}
 
@@ -152,11 +153,30 @@ def is_qualified_port(result: dict) -> bool:
     )
 
 
-def is_qualified_target(result: dict) -> bool:
-    """判断目标是否应进入公网结果、报告和历史记录。"""
-    if not (result.get("ping") or {}).get("alive"):
+def is_qualified_target(result: dict, require_ping: bool = True) -> bool:
+    """判断目标是否应进入公网结果、报告和历史记录。
+
+    require_ping=True（默认，IP 模式）：必须 Ping 存活。
+    require_ping=False（域名/子域发现模式）：域名常被禁 ICMP，只要存在可展示
+    的 HTTP 端口即算命中，不强制 Ping 存活。
+    """
+    if require_ping and not (result.get("ping") or {}).get("alive"):
         return False
     return any(is_qualified_port(port) for port in (result.get("ports") or {}).values())
+
+
+# IPv4 字面量判定：命中则视为 IP 目标，否则（含字母的主机名、[IPv6] 等）按域名处理
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def _is_domain(target: str) -> bool:
+    """目标是否为域名/主机名（非纯 IPv4 字面量）。"""
+    t = (target or "").strip()
+    if not t:
+        return False
+    if _IPV4_RE.match(t):
+        return False
+    return True
 
 
 def scan_port(ip: str, port: int, timeout: float, outdir: Path, cancel: threading.Event) -> dict:
@@ -180,19 +200,72 @@ def scan_port(ip: str, port: int, timeout: float, outdir: Path, cancel: threadin
 
 
 def scan_target(ip: str, ports: range, timeout: float, threads: int,
-                outdir: Path, on_event, cancel: threading.Event) -> dict:
+                outdir: Path, on_event, cancel: threading.Event,
+                require_ping: bool = True) -> dict:
     on_event({"type": "target_start", "ip": ip})
-    ping = ping_host(ip, timeout)
+    is_dom = _is_domain(ip)
+
+    # 域名目标：ICMP 常被云厂商/靶场禁用且对验证无意义，跳过 ping（域名模式 require_ping 恒为 False）
+    if is_dom:
+        ping = {"alive": False, "skipped": True, "reason": "domain"}
+    else:
+        ping = ping_host(ip, timeout)
     on_event({"type": "ping", "ip": ip, **ping})
 
     results = {"ip": ip, "ping": ping, "ports": {}, "open_count": 0}
     total = len(ports)
     cancelled = False
-    if not ping.get("alive"):
+    if require_ping and not ping.get("alive"):
         # 公网结果只展示 Ping 存活的目标；提前结束端口探测，避免生成无效模块。
         on_event({"type": "progress", "ip": ip, "done": total, "total": total})
         on_event({"type": "target_done", "ip": ip, "open_count": 0,
                   "qualified_count": 0, "total": total, "cancelled": False})
+        return results
+
+    # ---- 域名目标：走 probe_domain 做已知子域验证 ----
+    # 关键：靶场前端对一切子域统一 301→HTTPS、未拉起的靶场统一 404；
+    # fetch_http（urllib）不跟随跨端口 301 且 is_qualified_port 不过滤通用默认页，
+    # 直接用 scan_port 会把「301 Moved Permanently」默认页误判成活靶场。
+    # probe_domain 会跟随 301/302/307/308 到最终 HTTPS 响应，并过滤通用默认页，
+    # 返回最终 scheme/port 交给截图池抓真实首页。
+    if is_dom:
+        from scanner_app.core import domain_discovery
+        done = 0
+        for port in ports:
+            if cancel.is_set():
+                cancelled = True
+                break
+            done += 1
+            info = domain_discovery.probe_domain(ip, port, timeout=timeout)
+            if not info.get("live"):
+                on_event({"type": "progress", "ip": ip, "done": done, "total": total})
+                continue
+            final_port = info.get("port") or port
+            final_scheme = info.get("scheme") or ("https" if final_port == 443 else "http")
+            pr = {
+                "state": "open",
+                "port": final_port,
+                "is_http": True,
+                "scheme": final_scheme,
+                "status": info.get("status"),
+                "title": info.get("title") or "",
+                "server": info.get("server") or "",
+            }
+            body = info.get("body")
+            if body:
+                snap = outdir / f"{ip}_{final_port}.html"
+                try:
+                    snap.write_bytes(body)
+                    pr["snapshot"] = snap.name
+                except OSError:
+                    pass
+            results["ports"][str(final_port)] = pr
+            on_event({"type": "port_found", "ip": ip, **pr})
+            on_event({"type": "progress", "ip": ip, "done": done, "total": total})
+        open_count = sum(1 for r in results["ports"].values() if r["state"] == "open")
+        results["open_count"] = open_count
+        on_event({"type": "target_done", "ip": ip, "open_count": open_count,
+                  "qualified_count": open_count, "total": total, "cancelled": cancelled})
         return results
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as ex:
@@ -205,7 +278,7 @@ def scan_target(ip: str, ports: range, timeout: float, threads: int,
                 port = futmap[fut]
                 try:
                     r = fut.result()
-                except Exception as e:
+                except (OSError, ValueError, TypeError, RuntimeError) as e:
                     r = {"state": "error", "port": port, "error": repr(e)}
                 if is_qualified_port(r):
                     results["ports"][str(port)] = r
@@ -232,9 +305,11 @@ def write_reports(results: list, outdir: Path, port_start: int, port_end: int,
 
 def run_scan(targets, port_start=DEFAULT_PUBLIC_PORT_START,
              port_end=DEFAULT_PUBLIC_PORT_END, timeout=2.0, threads=100,
-             output="", on_event=None, cancel=None, screenshots=True, ports=None) -> list:
-    """执行一次完整扫描；targets 为 IP 字符串列表。
-    支持两种端口模式：ports 列表（显式端口集合）或 port_start/port_end 范围。"""
+             output="", on_event=None, cancel=None, screenshots=True, ports=None,
+             require_ping=True) -> list:
+    """执行一次完整扫描；targets 为 IP 或域名字符串列表。
+    支持两种端口模式：ports 列表（显式端口集合）或 port_start/port_end 范围。
+    require_ping=True（默认，IP 模式）要求 Ping 存活；域名目标传 False 放宽。"""
     base_on_event = on_event or (lambda evt: None)
     cancel = cancel if cancel is not None else threading.Event()
     scan_t0 = time.time()
@@ -249,10 +324,10 @@ def run_scan(targets, port_start=DEFAULT_PUBLIC_PORT_START,
 
     outdir = resolve_output_dir(output, "public")
     outdir.mkdir(parents=True, exist_ok=True)
+    # 显式端口列表优先；否则按端口范围。域名目标没有显式列表时默认只探 80（靶场首页端口）。
+    explicit_ports = None
     if ports:
-        ports = sorted(set(int(p) for p in ports if str(p).strip().isdigit()))
-    else:
-        ports = range(port_start, port_end + 1)
+        explicit_ports = sorted(set(int(p) for p in ports if str(p).strip().isdigit()))
 
     # 截图池：发现 HTTP 站点后异步截图（顺带抓 favicon），完成经 screenshot_done 事件上报
     shot_map = {}
@@ -260,7 +335,7 @@ def run_scan(targets, port_start=DEFAULT_PUBLIC_PORT_START,
     pool = None
     if screenshots:
         from scanner_app.core import screenshot as shot_mod
-        if getattr(shot_mod, "SCREENSHOT_AVAILABLE", shot_mod.PLAYWRIGHT_OK):
+        if shot_mod.SCREENSHOT_AVAILABLE:
             def on_shot_done(info):
                 if info["ok"]:
                     shot_map[(info["ip"], info["port"])] = info["path"]
@@ -283,9 +358,10 @@ def run_scan(targets, port_start=DEFAULT_PUBLIC_PORT_START,
             pool.submit(evt["ip"], evt["port"], evt["scheme"])
         base_on_event(evt)
 
+    display_ports = explicit_ports if explicit_ports is not None else list(range(port_start, port_end + 1))
     base_on_event({"type": "scan_start", "targets": targets, "port_start": port_start,
-                   "port_end": port_end, "total_ports": len(ports),
-                   "ports": list(ports) if isinstance(ports, list) else None,
+                   "port_end": port_end, "total_ports": len(display_ports),
+                   "ports": display_ports,
                    "results_dir": str(outdir)})
 
     all_results = []
@@ -293,13 +369,28 @@ def run_scan(targets, port_start=DEFAULT_PUBLIC_PORT_START,
     for ip in targets:
         if cancel.is_set():
             break
+        # 域名目标：放宽 Ping 要求；端口优先级：
+        #   1) 显式 ports 列表 → 用之
+        #   2) 调用方显式端口范围（非 IP 默认 8000–8020，如 GUI 给域名设 80/80 或用户指定 8099/443）→ 用之
+        #   3) 域名且无任何端口信息（纯默认）→ 默认只探 80（靶场首页端口）
+        #   4) IP 目标 → 用 port_start/port_end 范围
+        is_dom = _is_domain(ip)
+        if explicit_ports is not None:
+            t_ports = explicit_ports
+        elif is_dom and (port_start, port_end) == (DEFAULT_PUBLIC_PORT_START, DEFAULT_PUBLIC_PORT_END):
+            t_ports = [80]
+        else:
+            t_ports = range(port_start, port_end + 1)
+        t_require_ping = require_ping if not is_dom else False
         try:
-            result = scan_target(ip, ports, timeout, threads,
-                                 outdir, wrapped_on_event, cancel)
+            result = scan_target(ip, t_ports, timeout, threads,
+                                 outdir, wrapped_on_event, cancel,
+                                 require_ping=t_require_ping)
             scanned_results.append(result)
-            if is_qualified_target(result):
+            if is_qualified_target(result, require_ping=t_require_ping):
                 all_results.append(result)
-        except Exception as e:
+        except (OSError, ValueError, TypeError, RuntimeError,
+                subprocess.SubprocessError) as e:
             base_on_event({"type": "error", "message": f"扫描 {ip} 时出错：{e!r}"})
 
     if pool is not None:
@@ -332,3 +423,71 @@ def run_scan(targets, port_start=DEFAULT_PUBLIC_PORT_START,
                    "report_available": bool(all_results),
                    "duration": round(time.time() - scan_t0, 1)})
     return all_results
+
+
+def run_discovery_scan(template: str = None, prefix: str = "", suffix: str = "",
+                       length: int = 6, charset: str = None,
+                       mode: str = "random", discover_port: int = 80,
+                       port_start=DEFAULT_PUBLIC_PORT_START,
+                       port_end=DEFAULT_PUBLIC_PORT_END, timeout: float = 1.0,
+                       connect_timeout: float = 0.6, read_timeout: float = 1.0,
+                       threads: int = 100, discover_threads: int = 300,
+                       limit: int = None, found_limit: int = None,
+                       resume_path: str = None, reset: bool = False, seed=None,
+                       fast: bool = False, output: str = "", on_event=None, cancel=None,
+                       screenshots: bool = True) -> list:
+    """子域发现 + 全流水线扫描。
+
+    针对靶场改为 lab-XXXXXX.rzsec.cn 通配符域名形式后的搜索优化：
+      1) 用 domain_discovery 引擎做 HTTP Host 探测（默认端口 80，域名靶场首页所在端口），
+         发现「活的」靶场子域；
+      2) 把发现的域名喂入现有 run_scan 流水线，只扫首页所在端口（discover_port，默认 80）
+         + 截图 + 报告，域名目标放宽 Ping 要求（require_ping=False）。
+
+    注意：域名靶场页面固定在 80 端口，不再按 IP 模式扫 8000–8020；
+    IP 模式的 run_scan 行为完全不变；本函数是其超集。
+    """
+    from scanner_app.core import domain_discovery
+
+    base_on_event = on_event or (lambda e: None)
+    cancel = cancel if cancel is not None else threading.Event()
+    charset = charset or domain_discovery.DEFAULT_CHARSET
+
+    found_domains = []
+    seen = set()
+
+    def disc_on_event(evt):
+        # 透传 discovery_* 事件给 GUI/CLI；同时收集发现的活域名
+        if evt.get("type") == "domain_found":
+            d = evt["domain"]
+            if d not in seen:
+                seen.add(d)
+                found_domains.append(d)
+        base_on_event(evt)
+
+    # 阶段一：发现活靶场子域
+    try:
+        domain_discovery.run_discovery(
+            template=template, prefix=prefix, suffix=suffix, length=length,
+            charset=charset, mode=mode, port=discover_port, timeout=timeout,
+            connect_timeout=connect_timeout, read_timeout=read_timeout,
+            threads=discover_threads, limit=limit, found_limit=found_limit,
+            resume_path=resume_path, reset=reset, seed=seed, fast=fast,
+            on_event=disc_on_event, cancel=cancel)
+    except (OSError, ValueError, TypeError, RuntimeError) as e:
+        base_on_event({"type": "error", "message": f"子域发现阶段出错：{e!r}"})
+        return []
+
+    if not found_domains:
+        base_on_event({"type": "scan_done", "results_dir": "", "cancelled": cancel.is_set(),
+                       "open_total": 0, "screenshot_total": 0, "ping_alive_total": 0,
+                       "qualified_target_total": 0, "qualified_site_total": 0,
+                       "report_available": False, "duration": 0,
+                       "note": "未发现活靶场子域"})
+        return []
+
+    # 阶段二：对发现的域名做全流水线扫描（只扫首页所在端口 discover_port，放宽 Ping）
+    return run_scan(found_domains, port_start=discover_port, port_end=discover_port,
+                    timeout=timeout, threads=threads, output=output,
+                    on_event=base_on_event, cancel=cancel, screenshots=screenshots,
+                    require_ping=False)

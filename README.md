@@ -19,7 +19,7 @@
 **安全报告** · [SECURITY.md](SECURITY.md)　
 **更新日志** · [CHANGELOG.md](CHANGELOG.md)
 
-![靶场扫描助手首页预览](docs/assets/app-preview.png)
+![靶场扫描助手首页预览](.github/assets/app-preview.png)
 
 <p align="center"><sub>公网 Web 靶场首页预览 · 默认端口范围 8000–8020 · Windows 与 macOS 共用页面视觉</sub></p>
 
@@ -227,8 +227,8 @@ flowchart LR
 │  ├─ package_windows.ps1
 │  └─ build_macos.sh
 ├─ tests/                   # 平台、目录、页面和报告测试
-├─ docs/assets/             # README 预览图等 GitHub 文档素材
 ├─ .github/
+│  ├─ assets/               # README 预览图等 GitHub 展示素材
 │  ├─ workflows/            # CI 与 macOS Release 打包
 │  ├─ ISSUE_TEMPLATE/       # Bug / Feature 表单
 │  ├─ dependabot.yml        # 依赖更新配置
@@ -241,7 +241,7 @@ flowchart LR
 └─ README.md
 ```
 
-目录边界保持简单：源码只放 `scanner_app/`，双击入口只放 `launchers/`，构建与打包只放 `scripts/`，测试只放 `tests/`，GitHub 展示素材只放 `docs/assets/`。虚拟环境、构建中间文件、EXE、外置 Chromium、截图运行时、测试截图、扫描结果和本地发行包统一放入 `.artifacts/`，不进入版本库。Windows 截图发行包必须同时保留 EXE、VBS、`playwright-browsers/` 和 `playwright-runtime/`。
+目录边界保持简单：源码只放 `scanner_app/`，双击入口只放 `launchers/`，构建与打包只放 `scripts/`，测试只放 `tests/`，GitHub 展示素材只放 `.github/assets/`。虚拟环境、构建中间文件、EXE、外置 Chromium、截图运行时、测试截图、扫描结果和本地发行包统一放入 `.artifacts/`，不进入版本库。Windows 截图发行包必须同时保留 EXE、VBS、`playwright-browsers/` 和 `playwright-runtime/`。
 
 ## 构建与发布
 

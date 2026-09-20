@@ -32,9 +32,12 @@ configure_playwright_browser_path()
 
 try:
     from playwright.async_api import async_playwright
+    from playwright.async_api import Error as PlaywrightError
     PLAYWRIGHT_OK = True
 except ImportError:
     PLAYWRIGHT_OK = False
+    # 未安装 Playwright 时该分支的代码不会执行，这里仅为保持下方 except 元组合法。
+    PlaywrightError = Exception
 
 
 def _browser_search_roots() -> list[Path]:
@@ -68,15 +71,30 @@ def _browser_search_roots() -> list[Path]:
 
 
 def _chromium_executable(root: Path) -> Path | None:
-    """查找 Chromium 主程序，兼容不同 Playwright 版本的目录命名。"""
+    """查找 Chromium 主程序，兼容不同 Playwright 版本的目录命名。
+
+    新版 Playwright 的 macOS 构建改动了两处命名，旧模式会全部漏掉并误报
+    "未找到 Chromium"：
+      1. 平台目录带架构后缀：chrome-mac-x64 / chrome-mac-arm64（旧假设为 chrome-mac）
+      2. App 更名为 "Google Chrome for Testing.app"（旧假设为 Chromium.app）
+
+    因此这里用带通配的模式覆盖新旧命名，并让 headless shell 优先——它专为
+    无头场景构建，截图启动更快、占用更小；完整 Chromium 作为兜底。
+    """
     if not root.is_dir():
         return None
     patterns = (
-        "chromium-*/chrome-win/chrome.exe",
-        "chromium-*/chrome-win64/chrome.exe",
-        "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-        "chromium-*/chrome-linux/chrome",
-        "chromium-*/chrome-linux64/chrome",
+        # headless shell（优先：无头截图专用）
+        "chromium_headless_shell-*/chrome-headless-shell-mac*/chrome-headless-shell",
+        "chromium_headless_shell-*/chrome-headless-shell-linux/chrome-headless-shell",
+        "chromium_headless_shell-*/chrome-headless-shell-win*/chrome-headless-shell.exe",
+        # 完整 Chromium：macOS 新版命名（架构后缀 + Google Chrome for Testing）
+        "chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        # 完整 Chromium：macOS 旧命名
+        "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+        # Windows / Linux（目录名可能带 -x64/-arm64 等架构后缀）
+        "chromium-*/chrome-win*/chrome.exe",
+        "chromium-*/chrome-linux*/chrome",
     )
     for pattern in patterns:
         for candidate in root.glob(pattern):
@@ -170,7 +188,8 @@ class ScreenshotPool:
                     # 因此显式指定浏览器主程序，兼容 --no-shell 构建。
                     launch_kwargs["executable_path"] = str(CHROMIUM_EXECUTABLE)
                 browser = await self._pw.chromium.launch(**launch_kwargs)
-            except Exception as e:  # Chromium 未安装等
+            except (PlaywrightError, OSError, RuntimeError, asyncio.TimeoutError) as e:
+                # Chromium 未安装 / 启动超时 / 可执行文件缺失
                 self.available = False
                 self._launch_error = repr(e)
         else:
@@ -227,7 +246,7 @@ class ScreenshotPool:
             await page.wait_for_timeout(PAGE_SETTLE_MS)
             await page.screenshot(path=path, timeout=self.timeout * 1000)
             ok = True
-        except Exception as e:
+        except (PlaywrightError, OSError, RuntimeError, asyncio.TimeoutError) as e:
             err = f"{type(e).__name__}: {e}"
         if ok:
             fav = await self._grab_favicon(page)
@@ -243,7 +262,7 @@ class ScreenshotPool:
                 href = await el.get_attribute("href")
                 if href:
                     candidates.append(urljoin(page.url, href))
-        except Exception:
+        except (PlaywrightError, OSError, RuntimeError, ValueError):
             pass
         origin = "/".join(page.url.split("/")[:3])
         candidates.append(origin + "/favicon.ico")
@@ -254,7 +273,7 @@ class ScreenshotPool:
                     body = await resp.body()
                     if body and len(body) < 256 * 1024:
                         return body, _img_ext(body)
-            except Exception:
+            except (PlaywrightError, OSError, RuntimeError, asyncio.TimeoutError):
                 continue
         return None
 

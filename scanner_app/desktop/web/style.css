@@ -100,64 +100,13 @@ body {
   border-right: 1px solid rgba(0, 0, 0, 0.07);
   display: flex;
   flex-direction: column;
-  padding: 14px 11px 12px;
+  padding: 18px 11px 12px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 42px;
-  padding: 2px 10px 14px;
-  margin-bottom: 5px;
-  border-bottom: 1px solid var(--separator);
-}
-.brand-mark {
-  width: 32px;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: #fff;
-}
-.brand-mark img {
-  display: block;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-}
-.brand-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.brand-copy strong {
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.brand-copy small {
-  color: var(--text-2);
-  font-size: 10px;
-  line-height: 1.2;
-  letter-spacing: 0.2px;
-}
-
-.nav-group-label {
-  padding: 10px 10px 5px;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--text-2);
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-}
-.nav-group-label.first { padding-top: 6px; }
 
 .nav { display: flex; flex-direction: column; gap: 3px; }
+/* 去掉分组小标题后，用间距区分「扫描模式」与「工具」两组 */
+.nav + .nav { margin-top: 14px; }
 
 .nav-item {
   display: flex;
@@ -186,26 +135,6 @@ body {
 .nav-item.active svg { opacity: 1; }
 .nav-item:active { transform: scale(0.98); }
 
-.sidebar-footer {
-  margin-top: auto;
-  display: flex; align-items: center; gap: 7px;
-  padding: 10px 10px 2px;
-  font-size: 12px;
-  color: var(--text-2);
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: #b0b0b5; flex-shrink: 0;
-  transition: background 0.25s;
-}
-.status-dot.on { background: #30d158; animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0.45); }
-  70%  { box-shadow: 0 0 0 7px rgba(48, 209, 88, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0); }
-}
 
 /* ============ 主区域 ============ */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -216,8 +145,8 @@ body {
 .page.active { display: block; animation: fadein 0.22s ease; }
 @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
+.page-header { margin-bottom: 18px; }
 .page-header h1 { font-size: 26px; font-weight: 720; letter-spacing: -0.5px; }
-.page-header .subtitle { margin-top: 5px; color: var(--text-2); font-size: 12.5px; }
 
 .notice {
   margin-top: 17px;
@@ -243,6 +172,194 @@ body {
 }
 
 .config-card { margin-top: 18px; padding: 18px 20px 16px; }
+
+/* 折叠面板：用 grid 0fr→1fr 按内容真实高度展开。
+   此前用 max-height 硬编码（900px / 窄屏 1200px），往面板里加内容就得同步调数字，
+   加漏了会把底部按钮裁掉且点不到。改成 grid 后高度自适应，新增区块无需再维护魔法值。
+   注：不支持 grid-template-rows 插值的老内核（Safari 15 及更早）会退化为瞬间展开，功能不受影响。 */
+.discover-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  opacity: 0;
+  padding: 0 20px;
+  transition: grid-template-rows 0.28s ease, opacity 0.22s ease,
+              padding 0.22s ease, border-color 0.2s;
+  border-top: 1px solid transparent;
+}
+/* 折叠时仅靠 overflow 裁剪还不够：内容仍有 1px 高的盒子，键盘 Tab 能聚焦到
+   看不见的输入框。补 visibility:hidden 把它移出焦点顺序与无障碍树；
+   延迟 .28s 生效，保证收起动画播放期间内容还是可见的。 */
+.discover-panel > .discover-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: visibility 0s linear 0.28s;
+}
+.discover-panel.expanded > .discover-panel-inner {
+  visibility: visible;
+  transition-delay: 0s;
+}
+.discover-panel.expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  padding: 16px 20px 14px;
+  border-top-color: var(--separator);
+}
+.discover-panel-header {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 12px;
+  font-size: 14px; font-weight: 650; color: var(--text);
+}
+.discover-panel-header small {
+  font-size: 12px; font-weight: 500; color: var(--text-2);
+}
+.discover-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: auto;
+  padding: 6px 13px;
+  border: 1px solid var(--field-border);
+  border-radius: 99px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 12px; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: background 0.13s, border-color 0.13s, color 0.13s, transform 0.07s;
+}
+.discover-toggle:hover {
+  background: var(--blue-bg);
+  border-color: rgba(0, 122, 255, 0.35);
+  color: var(--blue);
+}
+.discover-toggle:active { transform: scale(0.97); }
+.discover-toggle .chev { transition: transform 0.2s ease; }
+.discover-toggle.expanded .chev { transform: rotate(180deg); }
+.discover-hint {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--blue-bg);
+  border-left: 3px solid var(--blue);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.discover-hint code {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  background: var(--code-bg);
+  padding: 1px 4px;
+  border-radius: 5px;
+}
+.discover-panel .field-check {
+  display: inline-flex; flex-direction: row; align-items: center; gap: 8px;
+}
+/* 子域发现：搜索空间与耗时估算（开始前就让用户知道代价） */
+.discover-estimate {
+  margin: 14px 0 0;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  background: var(--blue-bg);
+  border-left: 3px solid var(--blue);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.discover-estimate b { color: var(--text); font-weight: 650; }
+.discover-estimate .warn { color: var(--orange); font-weight: 650; }
+.discover-estimate .ok { color: var(--green); font-weight: 650; }
+
+/* 子域发现：已知子域轮询监控 */
+.watch-block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--separator);
+}
+.watch-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 12px;
+}
+.watch-head > span { font-size: 13px; font-weight: 650; color: var(--text); }
+.watch-head > em {
+  font-style: normal;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+/* 多行文本域复用输入框视觉 */
+.field textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  font-size: 12.5px;
+  font-family: "SF Mono", Menlo, "PingFang SC", monospace;
+  line-height: 1.6;
+  color: var(--text);
+  outline: none;
+  resize: vertical;
+  min-height: 62px;
+  width: 100%;
+  transition: border 0.13s, box-shadow 0.13s, background 0.13s;
+}
+.field textarea::placeholder { color: #b4b4b8; }
+.field textarea:focus {
+  border-color: var(--blue);
+  background: var(--input-focus-bg);
+  box-shadow: 0 0 0 3.5px rgba(0, 122, 255, 0.14);
+}
+
+.watch-status { font-size: 12px; color: var(--text-2); font-weight: 500; }
+
+.watch-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.watch-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+  border: 1px solid var(--separator);
+  font-size: 12px;
+  animation: cardin 0.22s ease both;
+}
+.watch-item .wdom {
+  flex: 1;
+  min-width: 0;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.watch-item .wtitle {
+  flex-shrink: 0;
+  max-width: 40%;
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.watch-dot {
+  flex-shrink: 0;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-2);
+}
+.watch-item.up { border-color: rgba(52, 199, 89, 0.35); background: var(--green-bg); }
+.watch-item.up .watch-dot { background: var(--green); box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.18); }
+.watch-item.up .wdom { color: var(--green); font-weight: 650; }
+.watch-item.down .watch-dot { background: rgba(120, 120, 128, 0.4); }
+.watch-item.pending .watch-dot { background: var(--orange); }
 
 .config-grid {
   display: grid;
@@ -695,7 +812,6 @@ body {
   border-radius: 50%;
 }
 .empty-hint p { margin-top: 10px; }
-.empty-hint .sub { font-size: 11.5px; opacity: 0.8; }
 
 /* ============ 主机表格（内网） ============ */
 .table-card { margin-top: 12px; overflow-x: auto; }
@@ -864,6 +980,46 @@ body {
 }
 .about-card .footnote { color: var(--text-2); font-size: 12px; margin-top: 10px; }
 
+/* 关于页：运行环境信息 */
+.env-block {
+  margin: 4px 0 14px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.env-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--separator);
+}
+.env-row:last-child { border-bottom: none; }
+.env-row > span {
+  flex-shrink: 0;
+  width: 76px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.env-row > b {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  word-break: break-all;
+}
+.env-row > b.env-ok { color: var(--green); }
+.env-row > b.env-no { color: var(--orange); }
+.env-row.env-row-path { align-items: flex-start; }
+.env-row > b.env-path {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.about-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+
 /* ============ 数据看板（精制版） ============ */
 .dashboard {
   margin-top: 24px;
@@ -990,6 +1146,7 @@ body {
 .modal-body {
   position: relative;
   width: 880px;
+  max-width: 92vw;
   max-height: 86vh;
   background: var(--surface-solid);
   border-radius: 16px;
@@ -1052,10 +1209,176 @@ body {
 .modal-charts::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.16); border: 2px solid var(--surface-solid); }
 
 /* ============ 双平台视觉差异 ============
-   Windows 与 macOS 共用同一套页面视觉；Windows 仅使用系统字体并隐藏左侧品牌区。 */
+   Windows 与 macOS 共用同一套页面视觉；Windows 仅换用系统字体并去掉选中态阴影。
+   注：旧的 `body.windows-shell .brand` 规则已随左上角品牌区一并移除，
+   该选择器在两个平台上都不再匹配任何元素，勿再补回。 */
 body.windows-shell {
   font-family: "Segoe UI", "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
-body.windows-shell .brand { display: none !important; }
 body.windows-shell .nav-item.active { box-shadow: none; }
+
+/* ============ 响应式自适应布局 ============
+   桌面 GUI 窗口可在约 600–1600px 间自由缩放，以下断点让侧边栏、
+   表单栅格、看板与弹窗在不同宽度下保持可读、美观且不溢出。 */
+
+/* —— 中屏（≤1100px）：侧边栏略收窄，内边距收紧，栅格弹性增强 —— */
+@media (max-width: 1100px) {
+  .sidebar { width: 196px; padding: 16px 9px 11px; }
+  .pages { padding: 22px 22px 18px; }
+  .console-card { margin: 0 22px 14px; }
+  .config-grid { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+  .results-grid { grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); }
+  .dash-grid { grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); }
+}
+
+/* —— 小屏（≤820px）：侧边栏收为图标条，表单转两列，结果单列 —— */
+@media (max-width: 820px) {
+  .sidebar {
+    width: 66px;
+    padding: 14px 8px;
+    align-items: stretch;
+  }
+  .nav { align-items: center; }
+  .nav-item {
+    justify-content: center;
+    padding: 9px 0;
+    gap: 0;
+  }
+  .nav-item span { display: none; }
+  .nav + .nav { margin-top: 10px; }
+
+  .pages { padding: 18px 16px 16px; }
+  .page { max-width: 100%; }
+  .page-header { margin-bottom: 14px; }
+  .page-header h1 { font-size: 22px; }
+
+  .config-card { padding: 16px 15px 14px; }
+  .config-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .internal-grid { grid-template-columns: 1fr 1fr; }
+  .field-wide, .field-wide2 { grid-column: 1 / -1; }
+
+  .discover-panel .config-grid { grid-template-columns: 1fr 1fr; }
+
+  .results-grid { grid-template-columns: 1fr; }
+  .stats-bar { gap: 10px; }
+  .stat-chip { min-width: calc(50% - 5px); flex: 1 1 auto; }
+
+  .results-head { gap: 10px; margin-top: 22px; }
+  .results-tools { width: 100%; }
+  .tool-search { flex: 1; width: auto; }
+
+  .modal-body { width: 94vw; }
+  .console-card { margin: 0 16px 12px; }
+  .history-tools .tool-search { width: 100%; }
+}
+
+/* —— 极窄（≤560px）：表单单列、统计条整行、控件占满 —— */
+@media (max-width: 560px) {
+  .sidebar { width: 58px; padding: 12px 6px; }
+  .pages { padding: 16px 12px 14px; }
+  .config-grid, .internal-grid { grid-template-columns: 1fr; }
+  .discover-panel .config-grid { grid-template-columns: 1fr; }
+  .stats-bar { gap: 8px; }
+  .stat-chip { min-width: 100%; flex-basis: 100%; }
+  .config-actions { gap: 9px; }
+  .preset-group { width: 100%; flex-wrap: wrap; }
+  .discover-toggle { margin-left: 0; }
+  .page-header h1 { font-size: 20px; }
+  .scan-summary { gap: 10px; }
+  .history-item { padding: 12px 14px; gap: 11px; }
+  .modal-body { width: 96vw; max-height: 90vh; }
+  .lightbox-body { max-width: 94vw; }
+}
+
+/* ============ 键盘可达性（焦点高亮） ============ */
+.nav-item:focus-visible,
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible,
+.preset-btn:focus-visible,
+.btn-open:focus-visible,
+.btn-delete:focus-visible,
+.discover-toggle:focus-visible,
+.chart-export:focus-visible,
+.tool-select:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.tool-search:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+/* ============ 动效增强 ============ */
+
+/* 日志行滑入：只做横向位移，不影响 scrollHeight，避免自动滚动跳动 */
+.log-line { animation: logIn 0.18s ease both; }
+@keyframes logIn {
+  from { opacity: 0; transform: translateX(-7px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 看板：改为标题条 + 图表卡依次错峰入场，替代整块一次性弹出 */
+.dashboard { animation: none; }
+.dash-titlebar { animation: cardin 0.3s ease both; }
+.dash-grid .chart-card { animation: cardin 0.36s ease both; }
+.dash-grid .chart-card:nth-child(1) { animation-delay: 0.05s; }
+.dash-grid .chart-card:nth-child(2) { animation-delay: 0.11s; }
+.dash-grid .chart-card:nth-child(3) { animation-delay: 0.17s; }
+.dash-grid .chart-card:nth-child(4) { animation-delay: 0.23s; }
+
+/* 列表错峰入场（搜索/排序重排时由 staggerIn 触发）：
+   延迟来自行内 --stagger-delay，重建 animation 简写时不会被清掉 */
+.stagger-in { animation: cardin 0.26s ease var(--stagger-delay, 0ms) both; }
+
+/* 弹窗 / 灯箱遮罩淡入（此前遮罩是瞬间出现） */
+.modal-mask, .lightbox-mask { animation: maskIn 0.2s ease both; }
+@keyframes maskIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* 图表导出按钮：常驻 4 个是纯视觉噪音，改为悬停/聚焦时才浮现；
+   键盘 Tab 进入卡片（focus-within）同样会显示，功能不缺失。 */
+.chart-export {
+  opacity: 0;
+  transition: opacity 0.16s ease, background 0.13s, border-color 0.13s, color 0.13s;
+}
+.chart-card:hover .chart-export,
+.chart-card:focus-within .chart-export,
+.chart-export:focus-visible { opacity: 1; }
+
+/* 轻量 toast：右下角瞬时反馈，1.9s 自动淡出，不占常驻空间 */
+.toast {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 200;
+  max-width: 340px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(28, 28, 30, 0.92);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 550;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.toast.show { opacity: 1; transform: none; }
+.toast.error { background: rgba(188, 40, 34, 0.94); }
+.toast.success { background: rgba(30, 128, 60, 0.94); }
+
+/* 尊重系统「减弱动态效果」偏好：关闭装饰性动画。
+   加载指示器保留旋转——它需要传达"进行中"这一状态信息。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .spinner {
+    animation-duration: 0.85s !important;
+    animation-iteration-count: infinite !important;
+  }
+}

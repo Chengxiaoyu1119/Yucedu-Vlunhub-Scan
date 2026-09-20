@@ -41,12 +41,13 @@ New-Item -ItemType Directory -Force -Path $StageRoot | Out-Null
 Copy-Item -LiteralPath $ExePath -Destination $StageRoot -Force
 Copy-Item -LiteralPath $LauncherPath -Destination $StageRoot -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "README.md") -Destination $StageRoot -Force
-New-Item -ItemType Directory -Force -Path (Join-Path $StageRoot "docs\assets") | Out-Null
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs\assets\app-preview.png") `
-    -Destination (Join-Path $StageRoot "docs\assets\app-preview.png") -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $StageRoot ".github\assets") | Out-Null
+Copy-Item -LiteralPath (Join-Path $ProjectRoot ".github\assets\app-preview.png") `
+    -Destination (Join-Path $StageRoot ".github\assets\app-preview.png") -Force
 Copy-Item -LiteralPath $BrowserPath -Destination $StageRoot -Recurse -Force
 Copy-Item -LiteralPath $PlaywrightRuntimePath -Destination $StageRoot -Recurse -Force
 
-Compress-Archive -Path (Join-Path $StageRoot "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+$StageEntries = Get-ChildItem -LiteralPath $StageRoot -Force | Select-Object -ExpandProperty FullName
+Compress-Archive -Path $StageEntries -DestinationPath $ZipPath -CompressionLevel Optimal
 $zipSizeMb = [math]::Round((Get-Item -LiteralPath $ZipPath).Length / 1MB, 1)
 Write-Host "Windows release package: $ZipPath ($zipSizeMb MB)"

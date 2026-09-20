@@ -4,9 +4,16 @@
 
 import asyncio
 import json
+import unittest
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:  # Playwright 为可选依赖：CI 安装后运行，本机/沙箱可干净跳过
+    async_playwright = None
+    PLAYWRIGHT_AVAILABLE = False
+
 from scanner_app.core.platform_support import configure_console
 
 GUI = Path(__file__).resolve().parents[1] / "scanner_app" / "desktop" / "web"
@@ -218,7 +225,10 @@ async def main():
         # ---- Windows 视觉边界：沿用共享主题、隐藏品牌区且最小窗口不横向溢出 ----
         await page.evaluate("document.body.classList.add('windows-shell')")
         windows_layout = await page.evaluate("""() => ({
-          brandHidden: getComputedStyle(document.querySelector('.brand')).display === 'none',
+          brandHidden: (() => {
+            const brand = document.querySelector('.brand');
+            return !brand || getComputedStyle(brand).display === 'none';
+          })(),
           activeNavHasNoLeftAccent: getComputedStyle(document.querySelector('.nav-item.active')).boxShadow === 'none',
           noHorizontalOverflow: document.body.scrollWidth <= window.innerWidth &&
             document.querySelector('.pages').scrollWidth <= document.querySelector('.pages').clientWidth
@@ -245,5 +255,16 @@ async def main():
         return 0 if all_ok else 1
 
 
+@unittest.skipUnless(PLAYWRIGHT_AVAILABLE, "playwright 未安装，跳过浏览器渲染测试")
+class TestDashboardCharts(unittest.TestCase):
+    """pywebview 看板 Chart.js 渲染冒烟测试（需 Playwright + Chromium）。"""
+
+    def test_dashboard_charts_render(self):
+        self.assertEqual(asyncio.run(main()), 0)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    if PLAYWRIGHT_AVAILABLE:
+        raise SystemExit(asyncio.run(main()))
+    print("playwright 未安装，跳过图表渲染测试")
+    raise SystemExit(0)

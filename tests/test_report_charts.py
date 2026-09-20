@@ -4,9 +4,16 @@
 
 import asyncio
 import json
+import unittest
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:  # Playwright 为可选依赖：CI 安装后运行，本机/沙箱可干净跳过
+    async_playwright = None
+    PLAYWRIGHT_AVAILABLE = False
+
 from scanner_app.core.platform_support import configure_console
 from scanner_app.core.reports import write_public_report, write_internal_report
 
@@ -112,5 +119,16 @@ async def main():
     return 0 if all_ok else 1
 
 
+@unittest.skipUnless(PLAYWRIGHT_AVAILABLE, "playwright 未安装，跳过浏览器渲染测试")
+class TestReportCharts(unittest.TestCase):
+    """report.html 内嵌 Chart.js 图表渲染冒烟测试（需 Playwright + Chromium）。"""
+
+    def test_report_charts_render(self):
+        self.assertEqual(asyncio.run(main()), 0)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    if PLAYWRIGHT_AVAILABLE:
+        raise SystemExit(asyncio.run(main()))
+    print("playwright 未安装，跳过报告图表渲染测试")
+    raise SystemExit(0)
