@@ -3,4 +3,4 @@
 # portable while screenshots keep working without a separate Python install.
 pywebview>=5.0,<6
 playwright>=1.40,<2
-pyinstaller>=6.0,<7
+pyinstaller>=6.22.3,<7
